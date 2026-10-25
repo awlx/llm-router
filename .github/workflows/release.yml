@@ -33,6 +33,8 @@ jobs:
             "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
             "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA")"
           echo "PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          # The binary prints the tag form, for example v0.1.0.
+          echo "BINARY_VERSION=v$VERSION" >> "$GITHUB_ENV"
 
       - name: Validate packaging
         if: matrix.goarch == 'amd64'
@@ -44,7 +46,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          go build -trimpath -ldflags="-s -w -X github.com/awlx/llm-router/internal/version.Version=$PACKAGE_VERSION" -o llm-router ./cmd/llm-router
+          go build -trimpath -ldflags="-s -w -X github.com/awlx/llm-router/internal/version.Version=$BINARY_VERSION" -o llm-router ./cmd/llm-router
 
       - name: Build deb and archive
         env:
@@ -74,7 +76,7 @@ jobs:
           dpkg --compare-versions \
             "$(dpkg-deb -f "$new" Version)" gt "$(dpkg-deb -f "$old" Version)"
           sudo ./packaging/test-deb-install.sh "$old" "$new"
-          test "$(./llm-router -version)" = "$PACKAGE_VERSION"
+          test "$(./llm-router -version)" = "$BINARY_VERSION"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -186,7 +188,7 @@ jobs:
               > /etc/apt/sources.list.d/llm-router.list
             apt-get update -o APT::Update::Error-Mode=any
             apt-get install -y llm-router
-            test "$(llm-router -version)" = "$(dpkg-query -W -f="\${Version}" llm-router)"
+            test "$(llm-router -version)" = "v$(dpkg-query -W -f="\${Version}" llm-router)"
             LLM_ROUTER_CONFIG=/etc/llm-router/config.json llm-router &
             for i in $(seq 30); do
               curl -fsS http://127.0.0.1:1234/health && exit 0
