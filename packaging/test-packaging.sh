@@ -24,6 +24,7 @@ assert_contains "$unit" "ExecStart=/usr/bin/llm-router"
 assert_contains "$unit" "Environment=LLM_ROUTER_CONFIG=/etc/llm-router/config.json"
 assert_contains "$unit" "ConditionPathExists=/etc/llm-router/config.json"
 assert_contains "$unit" "User=llm-router"
+assert_contains "$unit" "EnvironmentFile=-/etc/default/llm-router"
 assert_contains "$unit" "NoNewPrivileges=true"
 assert_contains "$unit" "ProtectSystem=strict"
 assert_not_contains "$unit" "/usr/local/"
@@ -41,6 +42,7 @@ assert_contains "$nfpm" "dst: /lib/systemd/system/llm-router.service"
 assert_contains "$nfpm" "dst: /usr/share/llm-router/config.example.json"
 assert_contains "$nfpm" "dst: /etc/llm-router/config.json"
 assert_contains "$nfpm" "type: config|noreplace"
+assert_contains "$nfpm" "group: llm-router"
 
 for script in preinstall postinstall preremove postremove package-version test-packaging test-deb-install; do
 	file=$repo/packaging/$script.sh

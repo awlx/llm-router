@@ -28,7 +28,10 @@ sudo apt install llm-router
 The package installs these files:
 
 - `/usr/bin/llm-router`: the binary.
-- `/etc/llm-router/config.json`: the configuration. Upgrades keep your changes.
+- `/etc/llm-router/config.json`: the configuration. Only `root` and the
+  `llm-router` group can read it. Upgrades keep your changes.
+- `/etc/default/llm-router` (optional): environment variables for the
+  service, for example API keys for `api_key_env`. Create it with mode `0600`.
 - `/lib/systemd/system/llm-router.service`: a hardened systemd unit. The
   service runs as the `llm-router` system user.
 

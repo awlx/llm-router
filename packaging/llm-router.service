@@ -10,6 +10,8 @@ Type=simple
 User=llm-router
 Group=llm-router
 Environment=LLM_ROUTER_CONFIG=/etc/llm-router/config.json
+# Optional. Set variables for api_key_env here, for example VLLM_API_KEY=...
+EnvironmentFile=-/etc/default/llm-router
 ExecStart=/usr/bin/llm-router
 Restart=on-failure
 RestartSec=3

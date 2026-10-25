@@ -43,6 +43,8 @@ cmp -s "$example" "$config" || fail "$config is not the example configuration"
 dpkg-query -W -f='${Conffiles}\n' llm-router | grep -q " $config " ||
 	fail "$config is not a conffile"
 [ -z "$(dpkg -V llm-router)" ] || fail "dpkg -V reports changes"
+[ "$(stat -c '%U:%G %a' "$config")" = "root:llm-router 640" ] ||
+	fail "$config owner or mode"
 systemctl is-enabled --quiet llm-router || fail "service not enabled"
 ! systemctl is-active --quiet llm-router || fail "service started on fresh install"
 
