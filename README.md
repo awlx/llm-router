@@ -49,6 +49,7 @@ Use a model ID from `GET /v1/models`.
 | `endpoints[].api_key` | | API key for a server that needs authentication, for example vLLM with `--api-key`. |
 | `endpoints[].api_key_env` | | Name of an environment variable that contains the API key. Use this or `api_key`, not both. |
 | `model_metadata` | | Extra fields for model entries in `GET /v1/models`. |
+| `cors_allowed_origins` | | Browser origins for CORS. See [Browser clients](#browser-clients). |
 
 If a server has an API key, the router sends `Authorization: Bearer <key>`
 to that server. This replaces the `Authorization` header of the client for
@@ -76,6 +77,19 @@ docker compose -f docker-compose.test.yml down
 ```
 
 For HTTPS, use the [Traefik example with Let's Encrypt and Hetzner DNS](examples/traefik).
+
+## Browser clients
+
+CORS is off by default. To let a web app call the router from a browser, set
+`cors_allowed_origins` in the configuration or `LLM_ROUTER_CORS_ORIGINS`:
+
+```sh
+LLM_ROUTER_CORS_ORIGINS=https://app.example.com,http://localhost:3000
+```
+
+Use `*` to allow all origins. The environment variable replaces the
+configuration value. When CORS is on, the router removes CORS headers from
+server responses and sends its own headers.
 
 ## Limits and access
 

@@ -515,3 +515,117 @@ func TestReadyRequiresRoutableModel(t *testing.T) {
 	check("/ready", http.StatusServiceUnavailable, `"status":"not_ready"`)
 	check("/health", http.StatusOK, `"status":"ok"`)
 }
+
+func TestLoadConfigCORSOrigins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "router.json")
+	write := func(origins string) {
+		t.Helper()
+		config := `{"listen":"127.0.0.1:1","endpoints":[{"name":"a","url":"http://127.0.0.1:2"}],"cors_allowed_origins":` + origins + `}`
+		if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`["https://app.example.com"]`)
+	config, err := loadConfig(path)
+	if err != nil || len(config.CORSAllowedOrigins) != 1 {
+		t.Fatalf("config=%v err=%v", config.CORSAllowedOrigins, err)
+	}
+	t.Setenv("LLM_ROUTER_CORS_ORIGINS", " https://a.example.com , http://localhost:3000 ")
+	config, err = loadConfig(path)
+	if err != nil || strings.Join(config.CORSAllowedOrigins, "|") != "https://a.example.com|http://localhost:3000" {
+		t.Fatalf("config=%v err=%v", config.CORSAllowedOrigins, err)
+	}
+	t.Setenv("LLM_ROUTER_CORS_ORIGINS", "")
+	if config, err = loadConfig(path); err != nil || len(config.CORSAllowedOrigins) != 0 {
+		t.Fatalf("empty variable did not disable CORS: %v %v", config.CORSAllowedOrigins, err)
+	}
+	for _, origin := range []string{"example.com", "https://example.com/", "ftp://example.com", "https://example.com/path"} {
+		t.Setenv("LLM_ROUTER_CORS_ORIGINS", origin)
+		if _, err := loadConfig(path); err == nil {
+			t.Fatalf("accepted origin %q", origin)
+		}
+	}
+}
+
+func corsRouter(t *testing.T, origins ...string) *router {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Access-Control-Allow-Origin", "*")
+		if request.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(writer, `{"data":[{"id":"cors-model"}]}`)
+			return
+		}
+		_, _ = io.WriteString(writer, `{}`)
+	}))
+	t.Cleanup(upstream.Close)
+	config := defaultConfig()
+	config.Endpoints = []EndpointConfig{{Name: "node-a", URL: upstream.URL}}
+	config.CORSAllowedOrigins = origins
+	result, err := newRouter(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.discover()
+	return result
+}
+
+func TestCORSDisabledByDefault(t *testing.T) {
+	router := corsRouter(t)
+	request := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	request.Header.Set("Origin", "https://app.example.com")
+	request.Header.Set("Access-Control-Request-Method", "POST")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || response.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("status=%d headers=%v", response.Code, response.Header())
+	}
+	request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"cors-model"}`))
+	request.Header.Set("Origin", "https://app.example.com")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("upstream CORS header changed while CORS is disabled: %v", response.Header())
+	}
+}
+
+func TestCORSAllowedOrigin(t *testing.T) {
+	router := corsRouter(t, "https://app.example.com")
+	request := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	request.Header.Set("Origin", "https://app.example.com")
+	request.Header.Set("Access-Control-Request-Method", "POST")
+	request.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	header := response.Header()
+	if response.Code != http.StatusNoContent || header.Get("Access-Control-Allow-Origin") != "https://app.example.com" ||
+		header.Get("Access-Control-Allow-Headers") != "authorization, content-type" || !strings.Contains(header.Get("Access-Control-Allow-Methods"), "POST") {
+		t.Fatalf("status=%d headers=%v", response.Code, header)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"cors-model"}`))
+	request.Header.Set("Origin", "https://app.example.com")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Join(response.Header().Values("Access-Control-Allow-Origin"), ",") != "https://app.example.com" {
+		t.Fatalf("status=%d headers=%v", response.Code, response.Header())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	request.Header.Set("Origin", "https://other.example.com")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Access-Control-Allow-Origin") != "" || response.Header().Get("Vary") != "Origin" {
+		t.Fatalf("disallowed origin: status=%d headers=%v", response.Code, response.Header())
+	}
+}
+
+func TestCORSWildcard(t *testing.T) {
+	router := corsRouter(t, "*")
+	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	request.Header.Set("Origin", "https://any.example.com")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("headers=%v", response.Header())
+	}
+}
