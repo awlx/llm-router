@@ -77,6 +77,19 @@ docker compose -f docker-compose.test.yml down
 
 For HTTPS, use the [Traefik example with Let's Encrypt and Hetzner DNS](examples/traefik).
 
+## Browser clients
+
+CORS is off by default. To let a web app call the router from a browser, set
+`cors_allowed_origins` in the configuration or `LLM_ROUTER_CORS_ORIGINS`:
+
+```sh
+LLM_ROUTER_CORS_ORIGINS=https://app.example.com,http://localhost:3000
+```
+
+Use `*` to allow all origins. The environment variable replaces the
+configuration value. When CORS is on, the router removes CORS headers from
+server responses and sends its own headers.
+
 ## Limits and access
 
 - No load balancing, failover or audio routes.
