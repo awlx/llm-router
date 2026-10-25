@@ -18,6 +18,7 @@ type routerMetrics struct {
 	requests          *prometheus.CounterVec
 	duration          *prometheus.HistogramVec
 	headers           *prometheus.HistogramVec
+	firstByte         *prometheus.HistogramVec
 	responseBytes     *prometheus.CounterVec
 	requestBytes      *prometheus.CounterVec
 	requestSize       *prometheus.HistogramVec
@@ -34,6 +35,7 @@ func newRouterMetrics(owner *router) *routerMetrics {
 		requests:          prometheus.NewCounterVec(prometheus.CounterOpts{Name: "llm_router_requests_total", Help: "Finished inference requests, including rejected and aborted requests."}, []string{"endpoint", "model", "route", "code", "outcome"}),
 		duration:          prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "llm_router_request_duration_seconds", Help: "Inference request duration including the entire response stream, errors and cancellations.", Buckets: []float64{.05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600, 1800, 3600}}, labels),
 		headers:           prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "llm_router_response_headers_duration_seconds", Help: "Time to first final response headers; not time to first generated token.", Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120}}, labels),
+		firstByte:         prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "llm_router_time_to_first_byte_seconds", Help: "Time from request start to the first response body byte written to the client, for routed requests with status below 400. For streams, this is close to time to first token.", Buckets: []float64{.025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300}}, []string{"endpoint", "model"}),
 		responseBytes:     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "llm_router_response_bytes_total", Help: "Response body bytes successfully written, excluding HTTP headers."}, labels),
 		requestBytes:      prometheus.NewCounterVec(prometheus.CounterOpts{Name: "llm_router_request_bytes_total", Help: "Request body bytes read, including JSON framing; oversized requests are counted only to the read limit."}, labels),
 		requestSize:       prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "llm_router_request_size_bytes", Help: "Request body size read, including JSON framing and all chat messages; not token count.", Buckets: sizeBuckets}, labels),
@@ -43,7 +45,7 @@ func newRouterMetrics(owner *router) *routerMetrics {
 		discoveryDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "llm_router_discovery_duration_seconds", Help: "Endpoint model discovery duration.", Buckets: prometheus.DefBuckets}, []string{"endpoint"}),
 	}
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(result.requests, result.duration, result.headers, result.responseBytes, result.requestBytes, result.requestSize, result.responseSize, result.inflight, result.discoveries, result.discoveryDuration, &discoveryCollector{owner: owner})
+	registry.MustRegister(result.requests, result.duration, result.headers, result.firstByte, result.responseBytes, result.requestBytes, result.requestSize, result.responseSize, result.inflight, result.discoveries, result.discoveryDuration, &discoveryCollector{owner: owner})
 	result.handler = promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 	return result
 }
@@ -57,6 +59,7 @@ type requestObservation struct {
 	// requestedModel is the client's model field, for logs only; metrics use model.
 	requestedModel string
 	code           int
+	firstByteSeen  bool
 	bytes          int64
 	inputBytes     int64
 }
@@ -93,9 +96,7 @@ func (r *router) observe(writer http.ResponseWriter, request *http.Request) (htt
 			return func(data []byte) (int, error) {
 				markHeaders(http.StatusOK)
 				written, err := next(data)
-				observation.mu.Lock()
-				observation.bytes += int64(written)
-				observation.mu.Unlock()
+				observation.addBytes(int64(written))
 				return written, err
 			}
 		},
@@ -103,9 +104,7 @@ func (r *router) observe(writer http.ResponseWriter, request *http.Request) (htt
 			return func(reader io.Reader) (int64, error) {
 				markHeaders(http.StatusOK)
 				written, err := next(reader)
-				observation.mu.Lock()
-				observation.bytes += written
-				observation.mu.Unlock()
+				observation.addBytes(written)
 				return written, err
 			}
 		},
@@ -114,6 +113,20 @@ func (r *router) observe(writer http.ResponseWriter, request *http.Request) (htt
 		},
 	})
 	return wrapped, observation
+}
+
+// addBytes counts written body bytes and records the time to the first byte of a routed request.
+func (o *requestObservation) addBytes(written int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.bytes += written
+	if o.firstByteSeen || written == 0 {
+		return
+	}
+	o.firstByteSeen = true
+	if o.endpoint != "" && o.code < 400 {
+		o.metrics.firstByte.WithLabelValues(o.endpoint, o.model).Observe(time.Since(o.started).Seconds())
+	}
 }
 
 func (o *requestObservation) finish(request *http.Request) {
