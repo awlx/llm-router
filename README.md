@@ -100,7 +100,7 @@ Use a model ID from `GET /v1/models`.
 
 Run `llm-router -version` to show the installed version.
 
-## Configuration
+### Configuration keys
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -206,6 +206,49 @@ time to first token. The router records it only for status codes below 400.
 
 The router writes one log line when each API request ends. The line has the
 client IP, model, server name, status, outcome, duration and body sizes.
+
+### Metrics
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `llm_router_requests_total` | Counter | `endpoint`, `model`, `route`, `code`, `outcome` |
+| `llm_router_request_duration_seconds` | Histogram | `endpoint`, `model`, `route` |
+| `llm_router_response_headers_duration_seconds` | Histogram | `endpoint`, `model`, `route` |
+| `llm_router_time_to_first_byte_seconds` | Histogram | `endpoint`, `model` |
+| `llm_router_request_bytes_total` | Counter | `endpoint`, `model`, `route` |
+| `llm_router_response_bytes_total` | Counter | `endpoint`, `model`, `route` |
+| `llm_router_request_size_bytes` | Histogram | `endpoint`, `model`, `route` |
+| `llm_router_response_size_bytes` | Histogram | `endpoint`, `model`, `route` |
+| `llm_router_requests_in_flight` | Gauge | `endpoint`, `model` |
+| `llm_router_discovery_requests_total` | Counter | `endpoint`, `result` |
+| `llm_router_discovery_duration_seconds` | Histogram | `endpoint` |
+| `llm_router_endpoint_up` | Gauge | `endpoint` |
+| `llm_router_model_info` | Gauge | `endpoint`, `model` |
+| `llm_router_models` | Gauge | none |
+| `llm_router_model_conflicts` | Gauge | none |
+| `llm_router_discovery_last_update_timestamp_seconds` | Gauge | none |
+
+Labels:
+
+- `endpoint`: the `endpoints[].name` value from the config. It is empty
+  when the router does not select a server.
+- `model`: the model ID that the server sends in `GET /v1/models`. For vLLM,
+  this is the `--served-model-name` value. It is empty for unknown models.
+- `route`: the request path, for example `/v1/chat/completions`.
+- `code`: the HTTP status code that the client gets.
+- `outcome`: `completed`, `upstream_error`, `invalid_request`,
+  `unknown_model`, `conflict`, `endpoint_unavailable`, `canceled` or `aborted`.
+- `result`: `success` or `error`.
+
+To join router metrics with
+[vLLM Fleet Dashboard](https://github.com/awlx/vllm-dashboard) metrics, use
+the `model` label. Do not use `model_key`. `model_key` is the model key from
+the dashboard config, and it can be different from the served model ID. If
+the dashboard cannot find the served model name, its `model` label contains
+the configured name. In this case, make the configured name the same as the
+served model ID, or use `label_replace` in PromQL. The router `endpoint` label
+and the dashboard `node` label are not the same. Map them with
+`label_replace` if necessary.
 
 Import the [router dashboard](docs/grafana-dashboard.json) into Grafana.
 The optional [fleet overview](docs/grafana-overview.json) also needs
