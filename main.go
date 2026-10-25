@@ -143,7 +143,7 @@ func newEndpoint(config EndpointConfig) (*endpoint, error) {
 	proxy.FlushInterval = -1
 	proxy.ErrorHandler = func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
 		log.Printf("proxy %s: %v", config.Name, proxyErr)
-		http.Error(writer, "upstream unavailable", http.StatusBadGateway)
+		writeError(writer, http.StatusBadGateway, "upstream unavailable", "upstream_error", "upstream_unavailable")
 	}
 	return &endpoint{config: config, proxy: proxy}, nil
 }
@@ -278,6 +278,25 @@ func (r *router) health(writer http.ResponseWriter) {
 	_ = json.NewEncoder(writer).Encode(payload)
 }
 
+var errBodyTooLarge = errors.New("request body is too large")
+
+type apiError struct {
+	Message string  `json:"message"`
+	Type    string  `json:"type"`
+	Param   *string `json:"param"`
+	Code    string  `json:"code"`
+}
+
+// writeError writes an error in the OpenAI API error format.
+func writeError(writer http.ResponseWriter, status int, message, errorType, code string) {
+	header := writer.Header()
+	header.Del("Content-Length")
+	header.Set("Content-Type", "application/json")
+	header.Set("X-Content-Type-Options", "nosniff")
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(map[string]apiError{"error": {Message: message, Type: errorType, Code: code}})
+}
+
 func readModel(request *http.Request, maxBytes int64) (string, error) {
 	if request.Body == nil {
 		return "", errors.New("request body is required")
@@ -288,10 +307,12 @@ func readModel(request *http.Request, maxBytes int64) (string, error) {
 		return "", err
 	}
 	if int64(len(body)) > maxBytes {
-		return "", errors.New("request body is too large")
+		return "", errBodyTooLarge
 	}
 	request.Body = io.NopCloser(bytes.NewReader(body))
 	request.ContentLength = int64(len(body))
+	request.TransferEncoding = nil
+	request.Header.Del("Transfer-Encoding")
 	var identity requestIdentity
 	if err := json.Unmarshal(body, &identity); err != nil || identity.Model == "" {
 		return "", errors.New("valid JSON model field is required")
@@ -322,8 +343,12 @@ func (r *router) proxy(writer http.ResponseWriter, request *http.Request) {
 	writer, observation := r.observe(writer, request)
 	defer observation.finish(request)
 	model, err := readModel(request, r.config.MaxRequestBytes)
+	if errors.Is(err, errBodyTooLarge) {
+		writeError(writer, http.StatusRequestEntityTooLarge, err.Error(), "invalid_request_error", "request_too_large")
+		return
+	}
 	if err != nil {
-		http.Error(writer, err.Error(), http.StatusBadRequest)
+		writeError(writer, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 		return
 	}
 	r.mu.RLock()
@@ -333,13 +358,13 @@ func (r *router) proxy(writer http.ResponseWriter, request *http.Request) {
 	if len(conflict) > 0 {
 		observation.model, observation.outcome = model, "conflict"
 		logModelRequest(request, model, "conflict", "")
-		http.Error(writer, "model id is duplicated across endpoints", http.StatusConflict)
+		writeError(writer, http.StatusConflict, fmt.Sprintf("model %q is served by more than one endpoint", model), "invalid_request_error", "model_conflict")
 		return
 	}
 	if upstream == nil {
 		observation.outcome = "unknown_model"
 		logModelRequest(request, model, "unknown_model", "")
-		http.Error(writer, "unknown model", http.StatusNotFound)
+		writeError(writer, http.StatusNotFound, fmt.Sprintf("model %q does not exist", model), "invalid_request_error", "model_not_found")
 		return
 	}
 	logModelRequest(request, model, "routed", upstream.config.Name)
@@ -355,7 +380,7 @@ func (r *router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	case request.URL.Path == "/metrics":
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
 			writer.Header().Set("Allow", "GET, HEAD")
-			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			writeError(writer, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
 			return
 		}
 		r.metrics.handler.ServeHTTP(writer, request)
@@ -366,7 +391,7 @@ func (r *router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	case request.Method == http.MethodPost && (request.URL.Path == "/v1/chat/completions" || request.URL.Path == "/v1/completions" || request.URL.Path == "/v1/responses"):
 		r.proxy(writer, request)
 	default:
-		http.NotFound(writer, request)
+		writeError(writer, http.StatusNotFound, "route not found", "invalid_request_error", "not_found")
 	}
 }
 

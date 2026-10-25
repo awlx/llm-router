@@ -7,6 +7,7 @@ The router reads each server's model list and sends requests to the matching ser
 - Keeps model names and request bodies unchanged.
 - Supports streaming, chat completions, completions and responses.
 - Rejects duplicate model IDs instead of choosing a server.
+- Returns errors in the OpenAI error format.
 
 ## Quick start
 
