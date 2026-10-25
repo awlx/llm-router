@@ -503,7 +503,6 @@ func (r *router) proxy(writer http.ResponseWriter, request *http.Request) {
 	}
 	if unavailable != "" {
 		observation.endpoint, observation.model, observation.outcome = unavailable, model, "endpoint_unavailable"
-		logModelRequest(request, model, "endpoint_unavailable", unavailable)
 		writer.Header().Set("Retry-After", strconv.Itoa(r.config.DiscoveryIntervalSeconds))
 		writeError(writer, http.StatusServiceUnavailable, fmt.Sprintf("model %q is temporarily unavailable", model), "server_error", "model_unavailable")
 		return
