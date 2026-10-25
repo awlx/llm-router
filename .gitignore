@@ -1,0 +1,13 @@
+/llm-router
+/bin/
+/router.json
+/.cache/
+.env
+.env.*
+!.env.example
+*.local.json
+*.log
+*.pem
+*.key
+__pycache__/
+.DS_Store

@@ -1,0 +1,8 @@
+{
+  "listen": "0.0.0.0:1234",
+  "discovery_interval_seconds": 2,
+  "endpoints": [
+    {"name": "primary", "url": "http://primary:8080"},
+    {"name": "backup", "url": "http://backup:8080"}
+  ]
+}

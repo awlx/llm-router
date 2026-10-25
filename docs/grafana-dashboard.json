@@ -1,0 +1,1508 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus scraping the LLM router /metrics endpoint",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "10.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    }
+  ],
+  "id": null,
+  "uid": "llm-router-telemetry",
+  "title": "LLM Router",
+  "description": "Exact-model routing, discovery, streaming latency and payload sizes. Response-header latency is not token TTFT. Sizes include JSON/SSE framing, not tokens. Counters reset when the router restarts. [readability-v2] Legends and model selectors retain exact served IDs. Latency heatmaps use router histograms; engine charts show poll means. [grouping-v3] Overview groups follow operational questions; router detail distributions repeat per selected model.",
+  "tags": [
+    "llm",
+    "router",
+    "inference"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "refresh": "15s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "Scrape job",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": "label_values(llm_router_models, job)",
+        "refresh": 1,
+        "sort": 1
+      },
+      {
+        "name": "instance",
+        "label": "Router instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": "label_values(llm_router_models{job=\"$job\"}, instance)",
+        "refresh": 1,
+        "sort": 1
+      },
+      {
+        "name": "endpoint",
+        "label": "Endpoint",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": "label_values(llm_router_endpoint_up{job=\"$job\",instance=\"$instance\"}, endpoint)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "model",
+        "label": "Served model",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": "label_values(llm_router_model_info{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\"}, model)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "route",
+        "label": "API route",
+        "type": "custom",
+        "query": "/v1/chat/completions,/v1/completions,/v1/responses",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Endpoint discovery",
+      "description": "Last /v1/models discovery result, not inference health. Check discovery age for stalled refreshes.",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llm_router_endpoint_up{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\"}",
+          "legendFormat": "{{endpoint}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "graphMode": "none",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 22
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Routable models",
+      "type": "stat",
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llm_router_models{job=\"$job\",instance=\"$instance\"}",
+          "instant": true,
+          "legendFormat": "Routable models"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data",
+          "displayName": "Routable models"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 22
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Model conflicts",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llm_router_model_conflicts{job=\"$job\",instance=\"$instance\"}",
+          "instant": true,
+          "legendFormat": "Model conflicts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "noValue": "No data",
+          "displayName": "Model conflicts"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "graphMode": "none",
+        "textMode": "value",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 22
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Discovery age",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_min(time() - llm_router_discovery_last_update_timestamp_seconds{job=\"$job\",instance=\"$instance\"}, 0)",
+          "instant": true,
+          "legendFormat": "Discovery age"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "displayName": "Discovery age"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 22
+        }
+      }
+    },
+    {
+      "id": 15,
+      "title": "Workload",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 5,
+      "title": "Finished requests per second",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (endpoint,model) (rate(llm_router_requests_total{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "In-flight requests / open streams",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llm_router_requests_in_flight{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\"}",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "title": "Latency - $model",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [],
+      "repeat": "model"
+    },
+    {
+      "id": 19,
+      "title": "Full-request observations (selected range)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model) (increase(llm_router_request_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__range]))",
+          "legendFormat": "{{model}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "description": "Estimated observation count from counter increase, including errors and partial responses. Prometheus extrapolates between scrapes; missing data is not zero-filled.",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 22
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 4
+      },
+      "transformations": []
+    },
+    {
+      "id": 20,
+      "title": "Header observations (selected range)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model) (increase(llm_router_response_headers_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__range]))",
+          "legendFormat": "{{model}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "description": "Estimated observation count from counter increase, including errors and partial responses. Prometheus extrapolates between scrapes; missing data is not zero-filled.",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 22
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 4
+      },
+      "transformations": []
+    },
+    {
+      "id": 17,
+      "title": "Full request latency distribution",
+      "type": "heatmap",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by (le) (rate(llm_router_request_duration_seconds_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on () (sum(increase(llm_router_request_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__range] @ end())) > 0)",
+          "legendFormat": "{{le}}",
+          "instant": false,
+          "range": true,
+          "format": "heatmap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Spectral",
+          "steps": 64
+        },
+        "filterValues": {
+          "le": 0
+        },
+        "legend": {
+          "show": true
+        },
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        },
+        "yAxis": {
+          "unit": "s",
+          "axisPlacement": "left",
+          "reverse": false
+        }
+      },
+      "description": "Non-cumulative histogram buckets across the selected models. Color shows observations/s. Errors and partial responses are included; empty cells have no observations. Includes request-body read and the full response stream; not per-token latency.",
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "id": 18,
+      "title": "Response-header latency distribution",
+      "type": "heatmap",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by (le) (rate(llm_router_response_headers_duration_seconds_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on () (sum(increase(llm_router_response_headers_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__range] @ end())) > 0)",
+          "legendFormat": "{{le}}",
+          "instant": false,
+          "range": true,
+          "format": "heatmap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Spectral",
+          "steps": 64
+        },
+        "filterValues": {
+          "le": 0
+        },
+        "legend": {
+          "show": true
+        },
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        },
+        "yAxis": {
+          "unit": "s",
+          "axisPlacement": "left",
+          "reverse": false
+        }
+      },
+      "description": "Non-cumulative histogram buckets across the selected models. Color shows observations/s. Errors and partial responses are included; empty cells have no observations. Time to final HTTP response headers, NOT time to first generated token.",
+      "gridPos": {
+        "x": 12,
+        "y": 17,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "id": 21,
+      "title": "Payloads - $model",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [],
+      "repeat": "model"
+    },
+    {
+      "id": 9,
+      "title": "Request payload size distribution",
+      "description": "Bucketed request rate across selected models and endpoints. Size includes all messages, JSON and inline media, not token counts. Oversized rejected requests count to the read limit. Color shows requests/s.",
+      "type": "heatmap",
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by (le) (rate(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on () (sum(increase(llm_router_request_size_bytes_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__range] @ end())) > 0)",
+          "legendFormat": "{{le}}",
+          "format": "heatmap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Spectral",
+          "steps": 64
+        },
+        "filterValues": {
+          "le": 0
+        },
+        "legend": {
+          "show": true
+        },
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        },
+        "yAxis": {
+          "unit": "bytes",
+          "axisPlacement": "left",
+          "reverse": false
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Response payload size distribution",
+      "description": "Bucketed response rate across selected models and endpoints. Size includes JSON/SSE framing and partial responses; no answer contents are retained. Color shows responses/s.",
+      "type": "heatmap",
+      "gridPos": {
+        "x": 12,
+        "y": 26,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by (le) (rate(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on () (sum(increase(llm_router_response_size_bytes_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__range] @ end())) > 0)",
+          "legendFormat": "{{le}}",
+          "format": "heatmap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "No observations"
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Spectral",
+          "steps": 64
+        },
+        "filterValues": {
+          "le": 0
+        },
+        "legend": {
+          "show": true
+        },
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        },
+        "yAxis": {
+          "unit": "bytes",
+          "axisPlacement": "left",
+          "reverse": false
+        }
+      }
+    },
+    {
+      "id": 22,
+      "title": "Request size buckets (selected range)",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "B0",
+          "expr": "sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"128(\\\\.0)?|1\\\\.28e\\\\+0?2\"}[$__range]))",
+          "legendFormat": "0 - 128 B",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B1",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"512(\\\\.0)?|5\\\\.12e\\\\+0?2\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"128(\\\\.0)?|1\\\\.28e\\\\+0?2\"}[$__range])), 0)",
+          "legendFormat": "128 B - 512 B",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B2",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"1024(\\\\.0)?|1\\\\.024e\\\\+0?3\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"512(\\\\.0)?|5\\\\.12e\\\\+0?2\"}[$__range])), 0)",
+          "legendFormat": "512 B - 1 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B3",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"4096(\\\\.0)?|4\\\\.096e\\\\+0?3\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"1024(\\\\.0)?|1\\\\.024e\\\\+0?3\"}[$__range])), 0)",
+          "legendFormat": "1 KiB - 4 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B4",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"16384(\\\\.0)?|1\\\\.6384e\\\\+0?4\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"4096(\\\\.0)?|4\\\\.096e\\\\+0?3\"}[$__range])), 0)",
+          "legendFormat": "4 KiB - 16 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B5",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"65536(\\\\.0)?|6\\\\.5536e\\\\+0?4\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"16384(\\\\.0)?|1\\\\.6384e\\\\+0?4\"}[$__range])), 0)",
+          "legendFormat": "16 KiB - 64 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B6",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"262144(\\\\.0)?|2\\\\.62144e\\\\+0?5\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"65536(\\\\.0)?|6\\\\.5536e\\\\+0?4\"}[$__range])), 0)",
+          "legendFormat": "64 KiB - 256 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B7",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"1048576(\\\\.0)?|1\\\\.048576e\\\\+0?6\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"262144(\\\\.0)?|2\\\\.62144e\\\\+0?5\"}[$__range])), 0)",
+          "legendFormat": "256 KiB - 1 MiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B8",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"4194304(\\\\.0)?|4\\\\.194304e\\\\+0?6\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"1048576(\\\\.0)?|1\\\\.048576e\\\\+0?6\"}[$__range])), 0)",
+          "legendFormat": "1 MiB - 4 MiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B9",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"16777216(\\\\.0)?|1\\\\.6777216e\\\\+0?7\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"4194304(\\\\.0)?|4\\\\.194304e\\\\+0?6\"}[$__range])), 0)",
+          "legendFormat": "4 MiB - 16 MiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B10",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"33554432(\\\\.0)?|3\\\\.3554432e\\\\+0?7\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"16777216(\\\\.0)?|1\\\\.6777216e\\\\+0?7\"}[$__range])), 0)",
+          "legendFormat": "16 MiB - 32 MiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B11",
+          "expr": "clamp_min(sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"\\\\+Inf\"}[$__range])) - sum(increase(llm_router_request_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"33554432(\\\\.0)?|3\\\\.3554432e\\\\+0?7\"}[$__range])), 0)",
+          "legendFormat": "> 32 MiB",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#56AEB8"
+          }
+        },
+        "overrides": []
+      },
+      "description": "Estimated observations during the selected dashboard time range. Each bar is a disjoint payload-byte interval (exclusive lower, inclusive upper bound), including the overflow bucket. Sizes include JSON/SSE framing, not tokens. Counts may be fractional because increase() extrapolates between scrapes.",
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "sizing": "auto",
+        "minVizHeight": 16,
+        "maxVizHeight": 30
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 12,
+        "h": 10
+      }
+    },
+    {
+      "id": 23,
+      "title": "Response size buckets (selected range)",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "B0",
+          "expr": "sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"128(\\\\.0)?|1\\\\.28e\\\\+0?2\"}[$__range]))",
+          "legendFormat": "0 - 128 B",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B1",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"512(\\\\.0)?|5\\\\.12e\\\\+0?2\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"128(\\\\.0)?|1\\\\.28e\\\\+0?2\"}[$__range])), 0)",
+          "legendFormat": "128 B - 512 B",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B2",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"1024(\\\\.0)?|1\\\\.024e\\\\+0?3\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"512(\\\\.0)?|5\\\\.12e\\\\+0?2\"}[$__range])), 0)",
+          "legendFormat": "512 B - 1 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B3",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"4096(\\\\.0)?|4\\\\.096e\\\\+0?3\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"1024(\\\\.0)?|1\\\\.024e\\\\+0?3\"}[$__range])), 0)",
+          "legendFormat": "1 KiB - 4 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B4",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"16384(\\\\.0)?|1\\\\.6384e\\\\+0?4\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"4096(\\\\.0)?|4\\\\.096e\\\\+0?3\"}[$__range])), 0)",
+          "legendFormat": "4 KiB - 16 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B5",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"65536(\\\\.0)?|6\\\\.5536e\\\\+0?4\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"16384(\\\\.0)?|1\\\\.6384e\\\\+0?4\"}[$__range])), 0)",
+          "legendFormat": "16 KiB - 64 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B6",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"262144(\\\\.0)?|2\\\\.62144e\\\\+0?5\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"65536(\\\\.0)?|6\\\\.5536e\\\\+0?4\"}[$__range])), 0)",
+          "legendFormat": "64 KiB - 256 KiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B7",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"1048576(\\\\.0)?|1\\\\.048576e\\\\+0?6\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"262144(\\\\.0)?|2\\\\.62144e\\\\+0?5\"}[$__range])), 0)",
+          "legendFormat": "256 KiB - 1 MiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B8",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"4194304(\\\\.0)?|4\\\\.194304e\\\\+0?6\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"1048576(\\\\.0)?|1\\\\.048576e\\\\+0?6\"}[$__range])), 0)",
+          "legendFormat": "1 MiB - 4 MiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B9",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"16777216(\\\\.0)?|1\\\\.6777216e\\\\+0?7\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"4194304(\\\\.0)?|4\\\\.194304e\\\\+0?6\"}[$__range])), 0)",
+          "legendFormat": "4 MiB - 16 MiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B10",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"33554432(\\\\.0)?|3\\\\.3554432e\\\\+0?7\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"16777216(\\\\.0)?|1\\\\.6777216e\\\\+0?7\"}[$__range])), 0)",
+          "legendFormat": "16 MiB - 32 MiB",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B11",
+          "expr": "clamp_min(sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"\\\\+Inf\"}[$__range])) - sum(increase(llm_router_response_size_bytes_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\",le=~\"33554432(\\\\.0)?|3\\\\.3554432e\\\\+0?7\"}[$__range])), 0)",
+          "legendFormat": "> 32 MiB",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#56AEB8"
+          }
+        },
+        "overrides": []
+      },
+      "description": "Estimated observations during the selected dashboard time range. Each bar is a disjoint payload-byte interval (exclusive lower, inclusive upper bound), including the overflow bucket. Sizes include JSON/SSE framing, not tokens. Counts may be fractional because increase() extrapolates between scrapes.",
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "sizing": "auto",
+        "minVizHeight": 16,
+        "maxVizHeight": 30
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 34,
+        "w": 12,
+        "h": 10
+      }
+    },
+    {
+      "id": 24,
+      "title": "Traffic and errors",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 11,
+      "title": "Request / answer traffic",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 45,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model) (rate(llm_router_request_bytes_total{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "{{model}} requests"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (model) (rate(llm_router_response_bytes_total{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "{{model}} answers"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "HTTP errors / rejected / canceled requests",
+      "description": "All endpoints and models for this router and selected API route, including rejections without an assigned endpoint/model. Node/model filters intentionally do not hide these requests.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 45,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (code,outcome) (rate(llm_router_requests_total{job=\"$job\",instance=\"$instance\",route=~\"$route\",outcome!=\"completed\"}[$__rate_interval]))",
+          "legendFormat": "HTTP {{code}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 25,
+      "title": "Latency percentiles and sample counts",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 53,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 26,
+          "title": "Full request latency percentiles",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le,model) (rate(llm_router_request_duration_seconds_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on (model) (sum by (model) (increase(llm_router_request_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval])) >= 2)",
+              "legendFormat": "{{model}} p50"
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le,model) (rate(llm_router_request_duration_seconds_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on (model) (sum by (model) (increase(llm_router_request_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval])) >= 20)",
+              "legendFormat": "{{model}} p95"
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.99, sum by (le,model) (rate(llm_router_request_duration_seconds_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on (model) (sum by (model) (increase(llm_router_request_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval])) >= 100)",
+              "legendFormat": "{{model}} p99"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "description": "Histogram estimates over $__rate_interval. p50/p95/p99 are hidden below 2/20/100 observations respectively. These are minimum sample floors, not confidence guarantees; the adjacent chart uses the identical window.",
+          "gridPos": {
+            "x": 0,
+            "y": 54,
+            "w": 12,
+            "h": 8
+          },
+          "transformations": [],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 27,
+          "title": "Full-request samples per quantile window",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (model) (increase(llm_router_request_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))",
+              "legendFormat": "{{model}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "description": "Estimated observation count from counter increase, including errors and partial responses. Prometheus extrapolates between scrapes; missing data is not zero-filled.",
+          "gridPos": {
+            "x": 12,
+            "y": 54,
+            "w": 12,
+            "h": 8
+          },
+          "transformations": [],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 28,
+          "title": "Response-header latency percentiles",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le,model) (rate(llm_router_response_headers_duration_seconds_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on (model) (sum by (model) (increase(llm_router_response_headers_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval])) >= 2)",
+              "legendFormat": "{{model}} p50"
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le,model) (rate(llm_router_response_headers_duration_seconds_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on (model) (sum by (model) (increase(llm_router_response_headers_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval])) >= 20)",
+              "legendFormat": "{{model}} p95"
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.99, sum by (le,model) (rate(llm_router_response_headers_duration_seconds_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))) and on (model) (sum by (model) (increase(llm_router_response_headers_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval])) >= 100)",
+              "legendFormat": "{{model}} p99"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "description": "Histogram estimates over $__rate_interval. p50/p95/p99 are hidden below 2/20/100 observations respectively. These are minimum sample floors, not confidence guarantees; the adjacent chart uses the identical window.",
+          "gridPos": {
+            "x": 0,
+            "y": 62,
+            "w": 12,
+            "h": 8
+          },
+          "transformations": [],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 29,
+          "title": "Header samples per quantile window",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (model) (increase(llm_router_response_headers_duration_seconds_count{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\",model=~\"$model\",route=~\"$route\"}[$__rate_interval]))",
+              "legendFormat": "{{model}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "description": "Estimated observation count from counter increase, including errors and partial responses. Prometheus extrapolates between scrapes; missing data is not zero-filled.",
+          "gridPos": {
+            "x": 12,
+            "y": 62,
+            "w": 12,
+            "h": 8
+          },
+          "transformations": [],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Discovery details",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 70,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 13,
+          "title": "Discovery success / error rate",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 0,
+            "y": 71,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(llm_router_discovery_requests_total{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\"}[$__rate_interval])",
+              "legendFormat": "{{endpoint}} / {{result}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 14,
+          "title": "Discovery latency p95",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 12,
+            "y": 71,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le,endpoint) (rate(llm_router_discovery_duration_seconds_bucket{job=\"$job\",instance=\"$instance\",endpoint=~\"$endpoint\"}[$__rate_interval])))",
+              "legendFormat": "{{endpoint}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

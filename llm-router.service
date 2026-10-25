@@ -1,0 +1,29 @@
+[Unit]
+Description=Local LLM discovery router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=llm-router
+Group=llm-router
+Environment=LLM_ROUTER_CONFIG=/etc/llm-router/router.json
+ExecStart=/usr/local/bin/llm-router
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

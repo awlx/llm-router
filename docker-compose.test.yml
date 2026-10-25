@@ -1,0 +1,26 @@
+services:
+  primary:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - ./local-test/mock_model_server.py:/app/mock_model_server.py:ro
+    command: python3 mock_model_server.py 8080 model-a
+
+  backup:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - ./local-test/mock_model_server.py:/app/mock_model_server.py:ro
+    command: python3 mock_model_server.py 8080 model-b
+
+  router:
+    build: .
+    depends_on:
+      - primary
+      - backup
+    ports:
+      - "127.0.0.1:18235:1234"
+    environment:
+      LLM_ROUTER_CONFIG: /etc/llm-router/router.json
+    volumes:
+      - ./local-test/router.json:/etc/llm-router/router.json:ro

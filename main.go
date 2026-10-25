@@ -1,0 +1,397 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+type EndpointConfig struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+type Config struct {
+	Listen                   string           `json:"listen"`
+	DiscoveryIntervalSeconds int              `json:"discovery_interval_seconds"`
+	DiscoveryTimeoutSeconds  int              `json:"discovery_timeout_seconds"`
+	MaxRequestBytes          int64            `json:"max_request_bytes"`
+	Endpoints                []EndpointConfig `json:"endpoints"`
+	// Top-level fields merged into a model's /v1/models entry, e.g. architecture.input_modalities.
+	ModelMetadata map[string]map[string]json.RawMessage `json:"model_metadata"`
+}
+
+type modelDocument struct {
+	Object string            `json:"object"`
+	Data   []json.RawMessage `json:"data"`
+}
+
+type modelIdentity struct {
+	ID string `json:"id"`
+}
+
+type requestIdentity struct {
+	Model string `json:"model"`
+}
+
+type endpoint struct {
+	config EndpointConfig
+	proxy  *httputil.ReverseProxy
+}
+
+type registrySnapshot struct {
+	models    map[string]*endpoint
+	conflicts map[string][]string
+	documents map[string]json.RawMessage
+	errors    map[string]string
+	updatedAt time.Time
+}
+
+type router struct {
+	metrics   *routerMetrics
+	config    Config
+	client    *http.Client
+	endpoints []*endpoint
+	mu        sync.RWMutex
+	snapshot  registrySnapshot
+}
+
+func defaultConfig() Config {
+	return Config{
+		Listen:                   "127.0.0.1:1234",
+		DiscoveryIntervalSeconds: 15,
+		DiscoveryTimeoutSeconds:  4,
+		MaxRequestBytes:          32 << 20,
+	}
+}
+
+func loadConfig(path string) (Config, error) {
+	config := defaultConfig()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
+		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+	if config.Listen == "" || len(config.Endpoints) == 0 {
+		return Config{}, errors.New("listen and at least one endpoint are required")
+	}
+	if config.DiscoveryIntervalSeconds < 1 || config.DiscoveryTimeoutSeconds < 1 || config.MaxRequestBytes < 1024 {
+		return Config{}, errors.New("invalid discovery interval, timeout, or request size")
+	}
+	names := map[string]bool{}
+	for index, item := range config.Endpoints {
+		parsed, parseErr := url.ParseRequestURI(item.URL)
+		if item.Name == "" || names[item.Name] || parseErr != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return Config{}, fmt.Errorf("invalid or duplicate endpoint at index %d", index)
+		}
+		names[item.Name] = true
+	}
+	for model, fields := range config.ModelMetadata {
+		if _, ok := fields["id"]; ok {
+			return Config{}, fmt.Errorf("model_metadata for %q must not override id", model)
+		}
+	}
+	return config, nil
+}
+
+func (r *router) withMetadata(id string, raw json.RawMessage) json.RawMessage {
+	fields := r.config.ModelMetadata[id]
+	if len(fields) == 0 {
+		return raw
+	}
+	var document map[string]json.RawMessage
+	if json.Unmarshal(raw, &document) != nil {
+		return raw
+	}
+	for key, value := range fields {
+		document[key] = value
+	}
+	merged, err := json.Marshal(document)
+	if err != nil {
+		return raw
+	}
+	return merged
+}
+
+func newEndpoint(config EndpointConfig) (*endpoint, error) {
+	target, err := url.Parse(strings.TrimRight(config.URL, "/"))
+	if err != nil {
+		return nil, err
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(request *http.Request) {
+		originalDirector(request)
+		request.Host = target.Host
+	}
+	proxy.FlushInterval = -1
+	proxy.ErrorHandler = func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
+		log.Printf("proxy %s: %v", config.Name, proxyErr)
+		http.Error(writer, "upstream unavailable", http.StatusBadGateway)
+	}
+	return &endpoint{config: config, proxy: proxy}, nil
+}
+
+func newRouter(config Config) (*router, error) {
+	result := &router{
+		config:   config,
+		client:   &http.Client{Timeout: time.Duration(config.DiscoveryTimeoutSeconds) * time.Second},
+		snapshot: registrySnapshot{},
+	}
+	for _, item := range config.Endpoints {
+		upstream, err := newEndpoint(item)
+		if err != nil {
+			return nil, err
+		}
+		result.endpoints = append(result.endpoints, upstream)
+	}
+	result.metrics = newRouterMetrics(result)
+	return result, nil
+}
+
+func (r *router) discover() {
+	type result struct {
+		endpoint  *endpoint
+		documents map[string]json.RawMessage
+		err       error
+	}
+	results := make(chan result, len(r.endpoints))
+	for _, upstream := range r.endpoints {
+		go func(item *endpoint) {
+			started := time.Now()
+			outcome := "error"
+			defer func() {
+				r.metrics.discoveryDuration.WithLabelValues(item.config.Name).Observe(time.Since(started).Seconds())
+				r.metrics.discoveries.WithLabelValues(item.config.Name, outcome).Inc()
+			}()
+			modelsURL := strings.TrimRight(item.config.URL, "/") + "/v1/models"
+			response, err := r.client.Get(modelsURL)
+			if err != nil {
+				results <- result{endpoint: item, err: err}
+				return
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				results <- result{endpoint: item, err: fmt.Errorf("GET /v1/models: %s", response.Status)}
+				return
+			}
+			var document modelDocument
+			if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&document); err != nil {
+				results <- result{endpoint: item, err: err}
+				return
+			}
+			documents := map[string]json.RawMessage{}
+			for _, raw := range document.Data {
+				var identity modelIdentity
+				if json.Unmarshal(raw, &identity) == nil && identity.ID != "" {
+					documents[identity.ID] = r.withMetadata(identity.ID, append(json.RawMessage(nil), raw...))
+				}
+			}
+			outcome = "success"
+			results <- result{endpoint: item, documents: documents}
+		}(upstream)
+	}
+
+	discovered := map[string][]*endpoint{}
+	documents := map[string]json.RawMessage{}
+	errorsByEndpoint := map[string]string{}
+	for range r.endpoints {
+		item := <-results
+		if item.err != nil {
+			errorsByEndpoint[item.endpoint.config.Name] = item.err.Error()
+			continue
+		}
+		for id, document := range item.documents {
+			discovered[id] = append(discovered[id], item.endpoint)
+			documents[id] = document
+		}
+	}
+
+	models := map[string]*endpoint{}
+	conflicts := map[string][]string{}
+	for id, upstreams := range discovered {
+		if len(upstreams) == 1 {
+			models[id] = upstreams[0]
+			continue
+		}
+		delete(documents, id)
+		for _, upstream := range upstreams {
+			conflicts[id] = append(conflicts[id], upstream.config.Name)
+		}
+		sort.Strings(conflicts[id])
+	}
+
+	r.mu.Lock()
+	r.snapshot = registrySnapshot{models: models, conflicts: conflicts, documents: documents, errors: errorsByEndpoint, updatedAt: time.Now()}
+	r.mu.Unlock()
+	log.Printf("discovery: %d models, %d conflicts, %d unavailable endpoints", len(models), len(conflicts), len(errorsByEndpoint))
+}
+
+func (r *router) runDiscovery() {
+	ticker := time.NewTicker(time.Duration(r.config.DiscoveryIntervalSeconds) * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		r.discover()
+	}
+}
+
+func (r *router) models(writer http.ResponseWriter) {
+	r.mu.RLock()
+	ids := make([]string, 0, len(r.snapshot.documents))
+	for id := range r.snapshot.documents {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	documents := make([]json.RawMessage, 0, len(ids))
+	for _, id := range ids {
+		documents = append(documents, r.snapshot.documents[id])
+	}
+	r.mu.RUnlock()
+	writer.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(writer).Encode(modelDocument{Object: "list", Data: documents})
+}
+
+func (r *router) health(writer http.ResponseWriter) {
+	r.mu.RLock()
+	payload := map[string]any{
+		"status": "ok", "models": len(r.snapshot.models), "conflicts": r.snapshot.conflicts,
+		"endpoint_errors": r.snapshot.errors, "updated_at": r.snapshot.updatedAt,
+	}
+	r.mu.RUnlock()
+	writer.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(writer).Encode(payload)
+}
+
+func readModel(request *http.Request, maxBytes int64) (string, error) {
+	if request.Body == nil {
+		return "", errors.New("request body is required")
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxBytes+1))
+	request.Body.Close()
+	if err != nil {
+		return "", err
+	}
+	if int64(len(body)) > maxBytes {
+		return "", errors.New("request body is too large")
+	}
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	request.ContentLength = int64(len(body))
+	var identity requestIdentity
+	if err := json.Unmarshal(body, &identity); err != nil || identity.Model == "" {
+		return "", errors.New("valid JSON model field is required")
+	}
+	return identity.Model, nil
+}
+
+func requestAddresses(request *http.Request) (clientIP, directIP, forwardedFor string) {
+	directIP = request.RemoteAddr
+	if host, _, err := net.SplitHostPort(request.RemoteAddr); err == nil {
+		directIP = host
+	}
+	forwardedFor = strings.Join(request.Header.Values("X-Forwarded-For"), ", ")
+	clientIP = directIP
+	if first, _, _ := strings.Cut(forwardedFor, ","); net.ParseIP(strings.TrimSpace(first)) != nil {
+		clientIP = strings.TrimSpace(first)
+	}
+	return clientIP, directIP, forwardedFor
+}
+
+func logModelRequest(request *http.Request, model, result, upstream string) {
+	clientIP, directIP, forwardedFor := requestAddresses(request)
+	log.Printf("request client_ip=%q x_forwarded_for=%q direct_ip=%q model=%q path=%q result=%q upstream=%q",
+		clientIP, forwardedFor, directIP, model, request.URL.Path, result, upstream)
+}
+
+func (r *router) proxy(writer http.ResponseWriter, request *http.Request) {
+	writer, observation := r.observe(writer, request)
+	defer observation.finish(request)
+	model, err := readModel(request, r.config.MaxRequestBytes)
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	r.mu.RLock()
+	conflict := append([]string(nil), r.snapshot.conflicts[model]...)
+	upstream := r.snapshot.models[model]
+	r.mu.RUnlock()
+	if len(conflict) > 0 {
+		observation.model, observation.outcome = model, "conflict"
+		logModelRequest(request, model, "conflict", "")
+		http.Error(writer, "model id is duplicated across endpoints", http.StatusConflict)
+		return
+	}
+	if upstream == nil {
+		observation.outcome = "unknown_model"
+		logModelRequest(request, model, "unknown_model", "")
+		http.Error(writer, "unknown model", http.StatusNotFound)
+		return
+	}
+	logModelRequest(request, model, "routed", upstream.config.Name)
+	observation.endpoint, observation.model, observation.outcome = upstream.config.Name, model, "completed"
+	inflight := r.metrics.inflight.WithLabelValues(upstream.config.Name, model)
+	inflight.Inc()
+	defer inflight.Dec()
+	upstream.proxy.ServeHTTP(writer, request)
+}
+
+func (r *router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	switch {
+	case request.URL.Path == "/metrics":
+		if request.Method != http.MethodGet && request.Method != http.MethodHead {
+			writer.Header().Set("Allow", "GET, HEAD")
+			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		r.metrics.handler.ServeHTTP(writer, request)
+	case request.Method == http.MethodGet && request.URL.Path == "/health":
+		r.health(writer)
+	case request.Method == http.MethodGet && request.URL.Path == "/v1/models":
+		r.models(writer)
+	case request.Method == http.MethodPost && (request.URL.Path == "/v1/chat/completions" || request.URL.Path == "/v1/completions" || request.URL.Path == "/v1/responses"):
+		r.proxy(writer, request)
+	default:
+		http.NotFound(writer, request)
+	}
+}
+
+func main() {
+	path := os.Getenv("LLM_ROUTER_CONFIG")
+	if path == "" {
+		log.Fatal("LLM_ROUTER_CONFIG is required")
+	}
+	config, err := loadConfig(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	router, err := newRouter(config)
+	if err != nil {
+		log.Fatal(err)
+	}
+	router.discover()
+	go router.runDiscovery()
+	server := &http.Server{
+		Addr:              config.Listen,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	log.Printf("llm-router listening on %s with %d endpoints", config.Listen, len(config.Endpoints))
+	log.Fatal(server.ListenAndServe())
+}

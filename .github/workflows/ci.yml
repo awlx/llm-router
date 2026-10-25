@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: ['1.23.x', 'stable']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: CGO_ENABLED=0 go build -trimpath -o /tmp/llm-router .
+      - run: node --test docs/refine-dashboards.test.mjs
+      - run: docker compose -f docker-compose.test.yml config --quiet
