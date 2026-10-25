@@ -200,6 +200,9 @@ Use `/health` for discovery status and `/metrics` for Prometheus metrics.
 `/health` always returns 200 while the process runs. Use it as a liveness check.
 `/ready` returns 503 when no model is routable. Use it as a readiness check.
 Metrics cover requests, errors, active streams, duration and body sizes.
+`llm_router_time_to_first_byte_seconds` measures the time from request start
+to the first body byte sent to the client. For streams, it is close to the
+time to first token. The router records it only for status codes below 400.
 
 The router writes one log line when each API request ends. The line has the
 client IP, model, server name, status, outcome, duration and body sizes.
