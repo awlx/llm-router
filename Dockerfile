@@ -4,12 +4,13 @@ FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY *.go ./
+COPY cmd ./cmd
+COPY internal ./internal
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/llm-router .
+    go build -trimpath -ldflags="-s -w -X github.com/awlx/llm-router/internal/version.Version=${VERSION}" -o /out/llm-router ./cmd/llm-router
 
 # Distroless static: no shell, CA certificates for HTTPS model servers, and
 # the unprivileged "nonroot" user (65532).

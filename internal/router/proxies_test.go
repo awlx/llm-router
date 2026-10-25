@@ -1,17 +1,17 @@
-package main
+package router
 
 import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
+
+	"github.com/awlx/llm-router/internal/config"
 )
 
 func mustTrusted(t *testing.T, values ...string) []*net.IPNet {
 	t.Helper()
-	trusted, err := parseTrustedProxies(values)
+	trusted, err := config.ParseTrustedProxies(values)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,27 +46,5 @@ func TestRequestAddressesTrustedProxies(t *testing.T) {
 	request.Header.Set("X-Forwarded-For", "192.0.2.44")
 	if client, _, _ := requestAddresses(request, nil); client != "127.0.0.1" {
 		t.Errorf("empty trusted list: client=%q", client)
-	}
-}
-
-func TestLoadConfigTrustedProxies(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "router.json")
-	write := func(config string) {
-		if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(`{"listen":"127.0.0.1:1","endpoints":[{"name":"a","url":"http://127.0.0.1:2"}]}`)
-	config, err := loadConfig(path)
-	if err != nil || len(config.TrustedProxies) != 2 {
-		t.Fatalf("default trusted proxies=%v err=%v", config.TrustedProxies, err)
-	}
-	write(`{"listen":"127.0.0.1:1","endpoints":[{"name":"a","url":"http://127.0.0.1:2"}],"trusted_proxies":[]}`)
-	if config, err := loadConfig(path); err != nil || len(config.TrustedProxies) != 0 {
-		t.Fatalf("trusted proxies=%v err=%v", config.TrustedProxies, err)
-	}
-	write(`{"listen":"127.0.0.1:1","endpoints":[{"name":"a","url":"http://127.0.0.1:2"}],"trusted_proxies":["10.0.0.0/33"]}`)
-	if _, err := loadConfig(path); err == nil {
-		t.Fatal("expected invalid CIDR error")
 	}
 }

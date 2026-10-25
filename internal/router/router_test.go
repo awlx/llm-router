@@ -1,4 +1,4 @@
-package main
+package router
 
 import (
 	"bufio"
@@ -10,12 +10,12 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/awlx/llm-router/internal/config"
 )
 
 func modelServer(t *testing.T, id string) *httptest.Server {
@@ -34,22 +34,22 @@ func modelServer(t *testing.T, id string) *httptest.Server {
 	}))
 }
 
-func testRouter(t *testing.T, endpoints ...EndpointConfig) *router {
+func testRouter(t *testing.T, endpoints ...config.EndpointConfig) *Router {
 	t.Helper()
-	config := defaultConfig()
-	config.Endpoints = endpoints
-	result, err := newRouter(config)
+	cfg := config.Default()
+	cfg.Endpoints = endpoints
+	result, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result.discover()
+	result.Discover()
 	return result
 }
 
 func TestDiscoveryRoutesExactModelWithoutRewrite(t *testing.T) {
 	server := modelServer(t, "org/model-a")
 	defer server.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: server.URL})
 	body := `{"model":"org/model-a","messages":[{"role":"user","content":"hello"}]}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	response := httptest.NewRecorder()
@@ -62,7 +62,7 @@ func TestDiscoveryRoutesExactModelWithoutRewrite(t *testing.T) {
 func TestProxyLogsForwardedClientAndModel(t *testing.T) {
 	server := modelServer(t, "org/model-a")
 	defer server.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: server.URL})
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"org/model-a"}`))
 	request.RemoteAddr = "127.0.0.1:43210"
 	request.Header.Set("X-Forwarded-For", "192.0.2.44")
@@ -102,7 +102,7 @@ func TestProxyLogsForwardedClientAndModel(t *testing.T) {
 func TestProxyLogsRejectedRequest(t *testing.T) {
 	server := modelServer(t, "org/model-a")
 	defer server.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: server.URL})
 	var output bytes.Buffer
 	previousWriter := log.Writer()
 	log.SetOutput(&output)
@@ -135,8 +135,8 @@ func TestModelsAggregatesEndpoints(t *testing.T) {
 	second := modelServer(t, "model-b")
 	defer second.Close()
 	router := testRouter(t,
-		EndpointConfig{Name: "node-a", URL: first.URL},
-		EndpointConfig{Name: "node-b", URL: second.URL},
+		config.EndpointConfig{Name: "node-a", URL: first.URL},
+		config.EndpointConfig{Name: "node-b", URL: second.URL},
 	)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
@@ -155,8 +155,8 @@ func TestDuplicateModelIsConflict(t *testing.T) {
 	second := modelServer(t, "same-model")
 	defer second.Close()
 	router := testRouter(t,
-		EndpointConfig{Name: "node-a", URL: first.URL},
-		EndpointConfig{Name: "node-b", URL: second.URL},
+		config.EndpointConfig{Name: "node-a", URL: first.URL},
+		config.EndpointConfig{Name: "node-b", URL: second.URL},
 	)
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"same-model"}`))
 	response := httptest.NewRecorder()
@@ -169,17 +169,17 @@ func TestDuplicateModelIsConflict(t *testing.T) {
 func TestModelMetadataMergedIntoModels(t *testing.T) {
 	server := modelServer(t, "vision-model")
 	defer server.Close()
-	config := defaultConfig()
-	config.Endpoints = []EndpointConfig{{Name: "node-a", URL: server.URL}}
-	config.ModelMetadata = map[string]map[string]json.RawMessage{
+	cfg := config.Default()
+	cfg.Endpoints = []config.EndpointConfig{{Name: "node-a", URL: server.URL}}
+	cfg.ModelMetadata = map[string]map[string]json.RawMessage{
 		"vision-model":  {"architecture": json.RawMessage(`{"input_modalities":["text","image"]}`)},
 		"offline-model": {"architecture": json.RawMessage(`{"input_modalities":["text"]}`)},
 	}
-	router, err := newRouter(config)
+	router, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	router.discover()
+	router.Discover()
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	var document struct {
@@ -200,28 +200,7 @@ func TestModelMetadataMergedIntoModels(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRejectsMetadataIDOverride(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "router.json")
-	config := `{"listen":"127.0.0.1:1","endpoints":[{"name":"a","url":"http://127.0.0.1:2"}],"model_metadata":{"m":{"id":"other"}}}`
-	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadConfig(path); err == nil {
-		t.Fatal("expected id override error")
-	}
-}
-
-func TestLoadConfigRejectsUnknownFields(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "router.json")
-	if err := os.WriteFile(path, []byte(`{"listen":"127.0.0.1:1","endpoints":[],"unknown":true}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadConfig(path); err == nil {
-		t.Fatal("expected unknown field error")
-	}
-}
-
-func scrapeRouterMetrics(t *testing.T, router *router) string {
+func scrapeRouterMetrics(t *testing.T, router *Router) string {
 	t.Helper()
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -234,7 +213,7 @@ func scrapeRouterMetrics(t *testing.T, router *router) string {
 func TestMetricsRequestSizesAndBoundedLabels(t *testing.T) {
 	upstream := modelServer(t, "actual-model")
 	defer upstream.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-one", URL: upstream.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-one", URL: upstream.URL})
 	body := `{"model":"actual-model","messages":[{"role":"user","content":"private-content-sentinel"}]}`
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
@@ -295,7 +274,7 @@ func TestMetricsPreserveStreamingAndTrailers(t *testing.T) {
 		writer.Header().Set("X-Stream-End", "complete")
 	}))
 	defer upstream.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-stream", URL: upstream.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-stream", URL: upstream.URL})
 	done := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		defer close(done)
@@ -349,9 +328,9 @@ func TestMetricsDiscoveryFailureRemovesRoutes(t *testing.T) {
 		_, _ = io.WriteString(writer, `{"data":[{"id":"served-model"}]}`)
 	}))
 	defer server.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-one", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-one", URL: server.URL})
 	unavailable.Store(true)
-	router.discover()
+	router.Discover()
 	metrics := scrapeRouterMetrics(t, router)
 	if !strings.Contains(metrics, `llm_router_endpoint_up{endpoint="node-one"} 0`) || strings.Contains(metrics, `llm_router_model_info{`) {
 		t.Fatal("failed discovery retained a live route")
@@ -361,7 +340,7 @@ func TestMetricsDiscoveryFailureRemovesRoutes(t *testing.T) {
 func TestMetricsTrackCanceledRequests(t *testing.T) {
 	server := modelServer(t, "served-model")
 	defer server.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-one", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-one", URL: server.URL})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"served-model"}`)).WithContext(ctx)
@@ -391,8 +370,8 @@ func TestErrorsUseOpenAIFormat(t *testing.T) {
 	second := modelServer(t, "same-model")
 	defer second.Close()
 	router := testRouter(t,
-		EndpointConfig{Name: "node-a", URL: first.URL},
-		EndpointConfig{Name: "node-b", URL: second.URL},
+		config.EndpointConfig{Name: "node-a", URL: first.URL},
+		config.EndpointConfig{Name: "node-b", URL: second.URL},
 	)
 	router.config.MaxRequestBytes = 1024
 	cases := []struct {
@@ -424,7 +403,7 @@ func TestErrorsUseOpenAIFormat(t *testing.T) {
 
 func TestUpstreamUnavailableUsesOpenAIFormat(t *testing.T) {
 	server := modelServer(t, "gone-model")
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: server.URL})
 	server.Close()
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gone-model"}`)))
@@ -451,7 +430,7 @@ func TestChunkedRequestForwardedWithContentLength(t *testing.T) {
 		received <- seen{request.ContentLength, request.TransferEncoding}
 	}))
 	defer upstream.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: upstream.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: upstream.URL})
 	server := httptest.NewServer(router)
 	defer server.Close()
 	body := `{"model":"chunk-model"}`
@@ -482,7 +461,7 @@ func TestEmbeddingsRouteByModel(t *testing.T) {
 		_, _ = io.Copy(writer, request.Body)
 	}))
 	defer upstream.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: upstream.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: upstream.URL})
 	body := `{"model":"embed-model","input":"hello"}`
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body)))
@@ -499,7 +478,7 @@ func TestEmbeddingsRouteByModel(t *testing.T) {
 func TestGetSingleModel(t *testing.T) {
 	server := modelServer(t, "org/model-a")
 	defer server.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: server.URL})
 	for _, path := range []string{"/v1/models/org/model-a", "/v1/models/org%2Fmodel-a"} {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
@@ -528,7 +507,7 @@ func TestReadyRequiresRoutableModel(t *testing.T) {
 		_, _ = io.WriteString(writer, `{"data":[{"id":"served-model"}]}`)
 	}))
 	defer server.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-one", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-one", URL: server.URL})
 	check := func(path string, status int, body string) {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -539,43 +518,12 @@ func TestReadyRequiresRoutableModel(t *testing.T) {
 	}
 	check("/ready", http.StatusOK, `"status":"ready"`)
 	unavailable.Store(true)
-	router.discover()
+	router.Discover()
 	check("/ready", http.StatusServiceUnavailable, `"status":"not_ready"`)
 	check("/health", http.StatusOK, `"status":"ok"`)
 }
 
-func TestLoadConfigCORSOrigins(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "router.json")
-	write := func(origins string) {
-		t.Helper()
-		config := `{"listen":"127.0.0.1:1","endpoints":[{"name":"a","url":"http://127.0.0.1:2"}],"cors_allowed_origins":` + origins + `}`
-		if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(`["https://app.example.com"]`)
-	config, err := loadConfig(path)
-	if err != nil || len(config.CORSAllowedOrigins) != 1 {
-		t.Fatalf("config=%v err=%v", config.CORSAllowedOrigins, err)
-	}
-	t.Setenv("LLM_ROUTER_CORS_ORIGINS", " https://a.example.com , http://localhost:3000 ")
-	config, err = loadConfig(path)
-	if err != nil || strings.Join(config.CORSAllowedOrigins, "|") != "https://a.example.com|http://localhost:3000" {
-		t.Fatalf("config=%v err=%v", config.CORSAllowedOrigins, err)
-	}
-	t.Setenv("LLM_ROUTER_CORS_ORIGINS", "")
-	if config, err = loadConfig(path); err != nil || len(config.CORSAllowedOrigins) != 0 {
-		t.Fatalf("empty variable did not disable CORS: %v %v", config.CORSAllowedOrigins, err)
-	}
-	for _, origin := range []string{"example.com", "https://example.com/", "ftp://example.com", "https://example.com/path"} {
-		t.Setenv("LLM_ROUTER_CORS_ORIGINS", origin)
-		if _, err := loadConfig(path); err == nil {
-			t.Fatalf("accepted origin %q", origin)
-		}
-	}
-}
-
-func corsRouter(t *testing.T, origins ...string) *router {
+func corsRouter(t *testing.T, origins ...string) *Router {
 	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Access-Control-Allow-Origin", "*")
@@ -586,14 +534,14 @@ func corsRouter(t *testing.T, origins ...string) *router {
 		_, _ = io.WriteString(writer, `{}`)
 	}))
 	t.Cleanup(upstream.Close)
-	config := defaultConfig()
-	config.Endpoints = []EndpointConfig{{Name: "node-a", URL: upstream.URL}}
-	config.CORSAllowedOrigins = origins
-	result, err := newRouter(config)
+	cfg := config.Default()
+	cfg.Endpoints = []config.EndpointConfig{{Name: "node-a", URL: upstream.URL}}
+	cfg.CORSAllowedOrigins = origins
+	result, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result.discover()
+	result.Discover()
 	return result
 }
 

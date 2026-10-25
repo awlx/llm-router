@@ -1,4 +1,4 @@
-package main
+package router
 
 import (
 	"encoding/json"
@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/awlx/llm-router/internal/config"
 )
 
 func flakyModelServer(t *testing.T, ids ...string) (*httptest.Server, *atomic.Bool) {
@@ -33,7 +35,7 @@ func flakyModelServer(t *testing.T, ids ...string) (*httptest.Server, *atomic.Bo
 	return server, down
 }
 
-func chat(router *router, model string) *httptest.ResponseRecorder {
+func chat(router *Router, model string) *httptest.ResponseRecorder {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"`+model+`"}`)))
 	return response
@@ -41,12 +43,12 @@ func chat(router *router, model string) *httptest.ResponseRecorder {
 
 func TestDiscoveryGraceReturnsUnavailableThenRecovers(t *testing.T) {
 	server, down := flakyModelServer(t, "flaky")
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: server.URL})
 	if response := chat(router, "flaky"); response.Code != http.StatusOK {
 		t.Fatalf("status=%d", response.Code)
 	}
 	down.Store(true)
-	router.discover()
+	router.Discover()
 	response := chat(router, "flaky")
 	if response.Code != http.StatusServiceUnavailable || decodeAPIError(t, response).Code != "model_unavailable" || response.Header().Get("Retry-After") == "" {
 		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
@@ -57,7 +59,7 @@ func TestDiscoveryGraceReturnsUnavailableThenRecovers(t *testing.T) {
 		t.Fatalf("model must stay listed during the grace period: %s", models.Body.String())
 	}
 	down.Store(false)
-	router.discover()
+	router.Discover()
 	if response := chat(router, "flaky"); response.Code != http.StatusOK {
 		t.Fatalf("status after recovery=%d", response.Code)
 	}
@@ -65,10 +67,10 @@ func TestDiscoveryGraceReturnsUnavailableThenRecovers(t *testing.T) {
 
 func TestDiscoveryGraceExpires(t *testing.T) {
 	server, down := flakyModelServer(t, "flaky")
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: server.URL})
 	down.Store(true)
 	router.lastSeen["node-a"] = seenModels{documents: router.lastSeen["node-a"].documents, at: time.Now().Add(-time.Hour)}
-	router.discover()
+	router.Discover()
 	if response := chat(router, "flaky"); response.Code != http.StatusNotFound {
 		t.Fatalf("status=%d", response.Code)
 	}
@@ -76,16 +78,16 @@ func TestDiscoveryGraceExpires(t *testing.T) {
 
 func TestDiscoveryGraceDisabled(t *testing.T) {
 	server, down := flakyModelServer(t, "flaky")
-	config := defaultConfig()
-	config.DiscoveryGraceSeconds = 0
-	config.Endpoints = []EndpointConfig{{Name: "node-a", URL: server.URL}}
-	router, err := newRouter(config)
+	cfg := config.Default()
+	cfg.DiscoveryGraceSeconds = 0
+	cfg.Endpoints = []config.EndpointConfig{{Name: "node-a", URL: server.URL}}
+	router, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	router.discover()
+	router.Discover()
 	down.Store(true)
-	router.discover()
+	router.Discover()
 	if response := chat(router, "flaky"); response.Code != http.StatusNotFound {
 		t.Fatalf("status=%d", response.Code)
 	}
@@ -94,9 +96,9 @@ func TestDiscoveryGraceDisabled(t *testing.T) {
 func TestDiscoveryGraceKeepsDuplicateConflict(t *testing.T) {
 	serverA, _ := flakyModelServer(t, "dup", "only-a")
 	serverB, downB := flakyModelServer(t, "dup")
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: serverA.URL}, EndpointConfig{Name: "node-b", URL: serverB.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: serverA.URL}, config.EndpointConfig{Name: "node-b", URL: serverB.URL})
 	downB.Store(true)
-	router.discover()
+	router.Discover()
 	if response := chat(router, "dup"); response.Code != http.StatusConflict {
 		t.Fatalf("duplicate must stay a conflict during the grace period: status=%d", response.Code)
 	}

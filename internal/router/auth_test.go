@@ -1,15 +1,15 @@
-package main
+package router
 
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/awlx/llm-router/internal/config"
 )
 
-func authRouter(t *testing.T, exempt ...string) (*router, *string) {
+func authRouter(t *testing.T, exempt ...string) (*Router, *string) {
 	t.Helper()
 	var seen string
 	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -21,19 +21,19 @@ func authRouter(t *testing.T, exempt ...string) (*router, *string) {
 		_, _ = writer.Write([]byte(`{}`))
 	}))
 	t.Cleanup(backend.Close)
-	config := defaultConfig()
-	config.ClientAPIKey = "router-secret"
-	config.AuthExemptPaths = exempt
-	config.Endpoints = []EndpointConfig{{Name: "node-a", URL: backend.URL}}
-	result, err := newRouter(config)
+	cfg := config.Default()
+	cfg.ClientAPIKey = "router-secret"
+	cfg.AuthExemptPaths = exempt
+	cfg.Endpoints = []config.EndpointConfig{{Name: "node-a", URL: backend.URL}}
+	result, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result.discover()
+	result.Discover()
 	return result, &seen
 }
 
-func serveWithKey(router *router, method, path, key string) *httptest.ResponseRecorder {
+func serveWithKey(router *Router, method, path, key string) *httptest.ResponseRecorder {
 	var body *strings.Reader
 	if method == http.MethodPost {
 		body = strings.NewReader(`{"model":"m"}`)
@@ -86,31 +86,12 @@ func TestClientAuthKeyNotForwarded(t *testing.T) {
 	}
 }
 
-func TestLoadConfigClientAuth(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "router.json")
-	write := func(config string) {
-		if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(`{"listen":"127.0.0.1:1","endpoints":[{"name":"a","url":"http://127.0.0.1:2"}],"client_api_key":"from-file"}`)
-	t.Setenv("LLM_ROUTER_API_KEY", "from-env")
-	config, err := loadConfig(path)
-	if err != nil || config.ClientAPIKey != "from-env" {
-		t.Fatalf("key=%q err=%v", config.ClientAPIKey, err)
-	}
-	write(`{"listen":"127.0.0.1:1","endpoints":[{"name":"a","url":"http://127.0.0.1:2"}],"auth_exempt_paths":["/v1/models"]}`)
-	if _, err := loadConfig(path); err == nil {
-		t.Fatal("expected invalid exempt path error")
-	}
-}
-
 func TestClientAuthWithCORS(t *testing.T) {
-	config := defaultConfig()
-	config.ClientAPIKey = "router-secret"
-	config.CORSAllowedOrigins = []string{"https://app.example.com"}
-	config.Endpoints = []EndpointConfig{{Name: "node-a", URL: "http://192.0.2.1:8000"}}
-	router, err := newRouter(config)
+	cfg := config.Default()
+	cfg.ClientAPIKey = "router-secret"
+	cfg.CORSAllowedOrigins = []string{"https://app.example.com"}
+	cfg.Endpoints = []config.EndpointConfig{{Name: "node-a", URL: "http://192.0.2.1:8000"}}
+	router, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

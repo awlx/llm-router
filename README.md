@@ -75,8 +75,26 @@ You need Go 1.23 or newer.
 ```sh
 git clone https://github.com/awlx/llm-router.git
 cd llm-router
-go build -trimpath -o llm-router .
+go build -trimpath -o llm-router ./cmd/llm-router
 ```
+
+To set the version that `llm-router -version` shows:
+
+```sh
+go build -trimpath \
+  -ldflags="-s -w -X github.com/awlx/llm-router/internal/version.Version=v1.2.3" \
+  -o llm-router ./cmd/llm-router
+```
+
+### Project layout
+
+| Path | Contents |
+| --- | --- |
+| `cmd/llm-router` | Command: flags, wiring, signal handling. |
+| `internal/config` | Load and validate the JSON configuration. |
+| `internal/router` | Model discovery, request routing, proxy, CORS, client authentication, metrics, access log. |
+| `internal/server` | HTTP server with graceful shutdown, listen address checks. |
+| `internal/version` | Build version, set with `-ldflags`. |
 
 ## Configure
 

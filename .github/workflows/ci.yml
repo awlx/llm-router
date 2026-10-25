@@ -32,7 +32,7 @@ jobs:
       - name: staticcheck
         if: matrix.go == 'stable'
         run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
-      - run: CGO_ENABLED=0 go build -trimpath -o /tmp/llm-router .
+      - run: CGO_ENABLED=0 go build -trimpath -o /tmp/llm-router ./cmd/llm-router
       - run: node --test docs/refine-dashboards.test.mjs
       - run: docker compose -f docker-compose.test.yml config --quiet
       - run: docker compose --env-file examples/traefik/.env.example -f examples/traefik/compose.yml config --quiet

@@ -1,4 +1,4 @@
-package main
+package router
 
 import (
 	"io"
@@ -28,7 +28,7 @@ type routerMetrics struct {
 	discoveryDuration *prometheus.HistogramVec
 }
 
-func newRouterMetrics(owner *router) *routerMetrics {
+func newRouterMetrics(owner *Router) *routerMetrics {
 	labels := []string{"endpoint", "model", "route"}
 	sizeBuckets := []float64{128, 512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 33554432}
 	result := &routerMetrics{
@@ -75,7 +75,7 @@ func (body observedRequestBody) Read(data []byte) (int, error) {
 	return count, err
 }
 
-func (r *router) observe(writer http.ResponseWriter, request *http.Request) (http.ResponseWriter, *requestObservation) {
+func (r *Router) observe(writer http.ResponseWriter, request *http.Request) (http.ResponseWriter, *requestObservation) {
 	observation := &requestObservation{metrics: r.metrics, trustedProxies: r.trustedProxies, started: time.Now(), route: request.URL.Path, outcome: "invalid_request"}
 	if request.Body != nil {
 		request.Body = observedRequestBody{ReadCloser: request.Body, observation: observation}
@@ -164,7 +164,7 @@ var (
 	modelRoute       = prometheus.NewDesc("llm_router_model_info", "Current discovered model routing map; value 1 means uniquely routable.", []string{"endpoint", "model"}, nil)
 )
 
-type discoveryCollector struct{ owner *router }
+type discoveryCollector struct{ owner *Router }
 
 func (c *discoveryCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, desc := range []*prometheus.Desc{endpointUp, discoveryUpdated, discoveredModels, modelConflicts, modelRoute} {

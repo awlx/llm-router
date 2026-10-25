@@ -44,7 +44,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          go build -trimpath -ldflags="-s -w -X main.version=$PACKAGE_VERSION" -o llm-router .
+          go build -trimpath -ldflags="-s -w -X github.com/awlx/llm-router/internal/version.Version=$PACKAGE_VERSION" -o llm-router ./cmd/llm-router
 
       - name: Build deb and archive
         env:
