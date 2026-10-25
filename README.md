@@ -115,12 +115,25 @@ Run `llm-router -version` to show the installed version.
 | `endpoints[].url` | | Server address. The router removes a trailing `/v1`. |
 | `endpoints[].api_key` | | API key for a server that needs authentication, for example vLLM with `--api-key`. |
 | `endpoints[].api_key_env` | | Name of an environment variable that contains the API key. Use this or `api_key`, not both. |
+| `client_api_key` | | API key for clients. Clients send `Authorization: Bearer <key>`. The environment variable `LLM_ROUTER_API_KEY` has priority. |
+| `auth_exempt_paths` | | Paths that do not need the client API key. Allowed values: `/metrics`, `/health`, `/ready`. |
 | `model_metadata` | | Extra fields for model entries in `GET /v1/models`. |
 | `cors_allowed_origins` | | Browser origins for CORS. See [Browser clients](#browser-clients). |
 
 If a server has an API key, the router sends `Authorization: Bearer <key>`
 to that server. This replaces the `Authorization` header of the client for
 that server only. For other servers, the router sends the client header unchanged.
+
+## Client authentication
+
+Set `LLM_ROUTER_API_KEY` or `client_api_key` to make all routes need the key,
+including `/metrics`, `/health` and `/ready`. Requests without the correct key
+get `401` with the error code `invalid_api_key`.
+
+- The router does not send the client key to the servers.
+- To let Prometheus or a liveness probe connect without the key, add the path
+  to `auth_exempt_paths`, for example `["/metrics", "/health"]`.
+- CORS preflight requests (`OPTIONS`) from an origin in `cors_allowed_origins` do not need the key.
 
 ## Server failures
 
@@ -175,8 +188,8 @@ server responses and sends its own headers.
 ## Limits and access
 
 - No load balancing, failover or audio routes.
-- No built-in authentication or TLS. Keep the router on loopback, or put an
-  authenticated TLS proxy in front of all routes.
+- No built-in TLS. Keep the router on loopback, or put a TLS proxy in front of it.
+- Client authentication is optional. Without it, all clients can use all routes.
 - Logs include client IPs and model IDs. Health errors can include server addresses.
 
 ## Monitoring

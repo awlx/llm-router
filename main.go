@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -42,8 +43,12 @@ type Config struct {
 	// ShutdownTimeoutSeconds limits the wait for open requests and streams on SIGTERM or SIGINT.
 	ShutdownTimeoutSeconds int `json:"shutdown_timeout_seconds"`
 	// DiscoveryGraceSeconds keeps the models of a failed endpoint for this time and returns 503 for them.
-	DiscoveryGraceSeconds int              `json:"discovery_grace_seconds"`
-	Endpoints             []EndpointConfig `json:"endpoints"`
+	DiscoveryGraceSeconds int `json:"discovery_grace_seconds"`
+	// ClientAPIKey enables bearer-token authentication for clients. LLM_ROUTER_API_KEY overrides it.
+	ClientAPIKey string `json:"client_api_key,omitempty"`
+	// AuthExemptPaths lists paths that do not need the client API key: /metrics, /health or /ready.
+	AuthExemptPaths []string         `json:"auth_exempt_paths,omitempty"`
+	Endpoints       []EndpointConfig `json:"endpoints"`
 	// Top-level fields merged into a model's /v1/models entry, e.g. architecture.input_modalities.
 	ModelMetadata map[string]map[string]json.RawMessage `json:"model_metadata"`
 	// Browser origins allowed by CORS, or "*". Empty disables CORS. LLM_ROUTER_CORS_ORIGINS overrides it.
@@ -125,6 +130,14 @@ func loadConfig(path string) (Config, error) {
 	}
 	if config.DiscoveryIntervalSeconds < 1 || config.DiscoveryTimeoutSeconds < 1 || config.MaxRequestBytes < 1024 || config.ResponseHeaderTimeoutSeconds < 1 || config.ShutdownTimeoutSeconds < 1 || config.DiscoveryGraceSeconds < 0 {
 		return Config{}, errors.New("invalid discovery interval, timeout, grace, response header timeout, shutdown timeout, or request size")
+	}
+	if key := os.Getenv("LLM_ROUTER_API_KEY"); key != "" {
+		config.ClientAPIKey = key
+	}
+	for _, path := range config.AuthExemptPaths {
+		if path != "/metrics" && path != "/health" && path != "/ready" {
+			return Config{}, fmt.Errorf("auth_exempt_paths: %q is not /metrics, /health or /ready", path)
+		}
 	}
 	names := map[string]bool{}
 	for index, item := range config.Endpoints {
@@ -516,6 +529,10 @@ func (r *router) proxy(writer http.ResponseWriter, request *http.Request) {
 	inflight := r.metrics.inflight.WithLabelValues(upstream.config.Name, model)
 	inflight.Inc()
 	defer inflight.Dec()
+	if r.config.ClientAPIKey != "" {
+		// Do not send the router API key to the server. An endpoint api_key is set again by the proxy.
+		request.Header.Del("Authorization")
+	}
 	upstream.proxy.ServeHTTP(writer, request)
 }
 
@@ -568,8 +585,27 @@ func (r *router) cors(writer http.ResponseWriter, request *http.Request) bool {
 	return true
 }
 
+// authorized checks the client API key. Exempt paths do not need a key.
+func (r *router) authorized(request *http.Request) bool {
+	if r.config.ClientAPIKey == "" {
+		return true
+	}
+	for _, path := range r.config.AuthExemptPaths {
+		if request.URL.Path == path {
+			return true
+		}
+	}
+	token, ok := strings.CutPrefix(request.Header.Get("Authorization"), "Bearer ")
+	return ok && subtle.ConstantTimeCompare([]byte(token), []byte(r.config.ClientAPIKey)) == 1
+}
+
 func (r *router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if r.cors(writer, request) {
+		return
+	}
+	if !r.authorized(request) {
+		writer.Header().Set("WWW-Authenticate", `Bearer realm="llm-router"`)
+		writeError(writer, http.StatusUnauthorized, "missing or invalid API key", "invalid_request_error", "invalid_api_key")
 		return
 	}
 	switch {
