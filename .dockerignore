@@ -2,4 +2,5 @@
 !Dockerfile
 !go.mod
 !go.sum
-!*.go
+!cmd
+!internal

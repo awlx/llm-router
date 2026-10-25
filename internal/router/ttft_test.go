@@ -1,4 +1,4 @@
-package main
+package router
 
 import (
 	"encoding/json"
@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/awlx/llm-router/internal/config"
 )
 
 func TestTimeToFirstByteMetric(t *testing.T) {
@@ -27,7 +29,7 @@ func TestTimeToFirstByteMetric(t *testing.T) {
 		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer backend.Close()
-	router := testRouter(t, EndpointConfig{Name: "node-a", URL: backend.URL})
+	router := testRouter(t, config.EndpointConfig{Name: "node-a", URL: backend.URL})
 	server := httptest.NewServer(router)
 	defer server.Close()
 	response, err := http.Post(server.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"stream-model","stream":true}`))

@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -12,28 +12,13 @@ import (
 	"time"
 )
 
-func TestNormalizeEndpointURL(t *testing.T) {
-	for input, expected := range map[string]string{
-		"http://192.0.2.1:8000":         "http://192.0.2.1:8000",
-		"http://192.0.2.1:8000/":        "http://192.0.2.1:8000",
-		"http://192.0.2.1:8000/v1":      "http://192.0.2.1:8000",
-		"http://192.0.2.1:8000/v1/":     "http://192.0.2.1:8000",
-		"https://example.com/proxy/v1/": "https://example.com/proxy",
-		"https://example.com/v10":       "https://example.com/v10",
-	} {
-		if actual := normalizeEndpointURL(input); actual != expected {
-			t.Errorf("normalizeEndpointURL(%q)=%q, want %q", input, actual, expected)
-		}
-	}
-}
-
 func TestIsLoopbackListen(t *testing.T) {
 	for address, expected := range map[string]bool{
 		"127.0.0.1:1234": true, "localhost:1234": true, "[::1]:1234": true,
 		"0.0.0.0:1234": false, ":1234": false, "192.0.2.1:1234": false,
 	} {
-		if actual := isLoopbackListen(address); actual != expected {
-			t.Errorf("isLoopbackListen(%q)=%v", address, actual)
+		if actual := IsLoopbackListen(address); actual != expected {
+			t.Errorf("IsLoopbackListen(%q)=%v", address, actual)
 		}
 	}
 }
@@ -54,7 +39,7 @@ func TestServeDrainsOpenStreamOnShutdown(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, &http.Server{Handler: handler}, listener, 5*time.Second) }()
+	go func() { done <- Serve(ctx, &http.Server{Handler: handler}, listener, 5*time.Second) }()
 	response, err := http.Get("http://" + listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +72,7 @@ func TestServeClosesStreamsAfterTimeout(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, &http.Server{Handler: handler}, listener, 200*time.Millisecond) }()
+	go func() { done <- Serve(ctx, &http.Server{Handler: handler}, listener, 200*time.Millisecond) }()
 	response, err := http.Get("http://" + listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
