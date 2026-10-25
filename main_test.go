@@ -342,3 +342,103 @@ func TestMetricsTrackCanceledRequests(t *testing.T) {
 		t.Fatal("cancellation not recorded")
 	}
 }
+
+func decodeAPIError(t *testing.T, response *httptest.ResponseRecorder) apiError {
+	t.Helper()
+	if response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("content type=%q", response.Header().Get("Content-Type"))
+	}
+	var document struct {
+		Error apiError `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil || document.Error.Message == "" {
+		t.Fatalf("body=%s err=%v", response.Body.String(), err)
+	}
+	return document.Error
+}
+
+func TestErrorsUseOpenAIFormat(t *testing.T) {
+	first := modelServer(t, "same-model")
+	defer first.Close()
+	second := modelServer(t, "same-model")
+	defer second.Close()
+	router := testRouter(t,
+		EndpointConfig{Name: "node-a", URL: first.URL},
+		EndpointConfig{Name: "node-b", URL: second.URL},
+	)
+	router.config.MaxRequestBytes = 1024
+	cases := []struct {
+		name, method, path, body string
+		status                   int
+		code                     string
+	}{
+		{"invalid json", http.MethodPost, "/v1/chat/completions", `{`, http.StatusBadRequest, "invalid_request"},
+		{"missing model", http.MethodPost, "/v1/chat/completions", `{}`, http.StatusBadRequest, "invalid_request"},
+		{"too large", http.MethodPost, "/v1/chat/completions", `{"model":"` + strings.Repeat("x", 2048) + `"}`, http.StatusRequestEntityTooLarge, "request_too_large"},
+		{"unknown model", http.MethodPost, "/v1/chat/completions", `{"model":"missing"}`, http.StatusNotFound, "model_not_found"},
+		{"conflict", http.MethodPost, "/v1/chat/completions", `{"model":"same-model"}`, http.StatusConflict, "model_conflict"},
+		{"unknown route", http.MethodGet, "/v1/unknown", ``, http.StatusNotFound, "not_found"},
+		{"metrics method", http.MethodPost, "/metrics", ``, http.StatusMethodNotAllowed, "method_not_allowed"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(item.method, item.path, strings.NewReader(item.body)))
+			if response.Code != item.status {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if apiErr := decodeAPIError(t, response); apiErr.Code != item.code || apiErr.Type == "" {
+				t.Fatalf("error=%+v", apiErr)
+			}
+		})
+	}
+}
+
+func TestUpstreamUnavailableUsesOpenAIFormat(t *testing.T) {
+	server := modelServer(t, "gone-model")
+	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	server.Close()
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gone-model"}`)))
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d", response.Code)
+	}
+	if apiErr := decodeAPIError(t, response); apiErr.Type != "upstream_error" {
+		t.Fatalf("error=%+v", apiErr)
+	}
+}
+
+func TestChunkedRequestForwardedWithContentLength(t *testing.T) {
+	type seen struct {
+		length   int64
+		encoding []string
+	}
+	received := make(chan seen, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(writer, `{"data":[{"id":"chunk-model"}]}`)
+			return
+		}
+		_, _ = io.Copy(io.Discard, request.Body)
+		received <- seen{request.ContentLength, request.TransferEncoding}
+	}))
+	defer upstream.Close()
+	router := testRouter(t, EndpointConfig{Name: "node-a", URL: upstream.URL})
+	server := httptest.NewServer(router)
+	defer server.Close()
+	body := `{"model":"chunk-model"}`
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", io.NopCloser(strings.NewReader(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ContentLength = -1
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	got := <-received
+	if got.length != int64(len(body)) || len(got.encoding) != 0 {
+		t.Fatalf("content length=%d transfer encoding=%v", got.length, got.encoding)
+	}
+}
