@@ -21,11 +21,14 @@ cp config.example.json router.json
 ```
 
 Edit `router.json`. Replace the example addresses with your server addresses,
-such as `http://127.0.0.1:8000`. Do not add `/v1` to these addresses.
+such as `http://127.0.0.1:8000`. The router removes a trailing `/v1`.
 
 ```sh
-LLM_ROUTER_CONFIG=./router.json ./llm-router
+./llm-router -config ./router.json
 ```
+
+You can also set the config path in `LLM_ROUTER_CONFIG`. The `-config` flag
+has priority.
 
 Set your client's base URL to `http://127.0.0.1:1234/v1`.
 Use a model ID from `GET /v1/models`.
@@ -39,9 +42,10 @@ Use a model ID from `GET /v1/models`.
 | `discovery_interval_seconds` | `15` | Time between model list updates. |
 | `discovery_timeout_seconds` | `4` | Time limit for one model list request. |
 | `max_request_bytes` | `33554432` | Maximum request body size. |
+| `shutdown_timeout_seconds` | `30` | Time limit for open requests and streams after `SIGTERM` or `SIGINT`. |
 | `response_header_timeout_seconds` | `600` | Time limit for the response headers of a server. Streams after the headers have no time limit. |
 | `endpoints[].name` | | Unique server name. Metrics and logs use this name. |
-| `endpoints[].url` | | Server address without `/v1`. |
+| `endpoints[].url` | | Server address. The router removes a trailing `/v1`. |
 | `endpoints[].api_key` | | API key for a server that needs authentication, for example vLLM with `--api-key`. |
 | `endpoints[].api_key_env` | | Name of an environment variable that contains the API key. Use this or `api_key`, not both. |
 | `model_metadata` | | Extra fields for model entries in `GET /v1/models`. |
@@ -49,6 +53,16 @@ Use a model ID from `GET /v1/models`.
 If a server has an API key, the router sends `Authorization: Bearer <key>`
 to that server. This replaces the `Authorization` header of the client for
 that server only. For other servers, the router sends the client header unchanged.
+
+## Shutdown
+
+On `SIGTERM` or `SIGINT`, the router stops new connections. Open requests and
+streams continue until they finish or `shutdown_timeout_seconds` ends. Then
+the router closes the remaining connections. Set the stop timeout of your
+service manager to a longer time, for example `TimeoutStopSec` in systemd.
+
+In a container, set `listen` to `0.0.0.0:<port>`. If `listen` is a loopback
+address in a container, the router logs a warning.
 
 ## Docker demo
 
