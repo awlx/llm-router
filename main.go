@@ -21,14 +21,20 @@ import (
 type EndpointConfig struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
+	// APIKey is sent as a bearer token for discovery and proxied requests to this endpoint.
+	APIKey string `json:"api_key,omitempty"`
+	// APIKeyEnv names an environment variable that contains the API key.
+	APIKeyEnv string `json:"api_key_env,omitempty"`
 }
 
 type Config struct {
-	Listen                   string           `json:"listen"`
-	DiscoveryIntervalSeconds int              `json:"discovery_interval_seconds"`
-	DiscoveryTimeoutSeconds  int              `json:"discovery_timeout_seconds"`
-	MaxRequestBytes          int64            `json:"max_request_bytes"`
-	Endpoints                []EndpointConfig `json:"endpoints"`
+	Listen                   string `json:"listen"`
+	DiscoveryIntervalSeconds int    `json:"discovery_interval_seconds"`
+	DiscoveryTimeoutSeconds  int    `json:"discovery_timeout_seconds"`
+	MaxRequestBytes          int64  `json:"max_request_bytes"`
+	// ResponseHeaderTimeoutSeconds limits the wait for upstream response headers; streams are not limited.
+	ResponseHeaderTimeoutSeconds int              `json:"response_header_timeout_seconds"`
+	Endpoints                    []EndpointConfig `json:"endpoints"`
 	// Top-level fields merged into a model's /v1/models entry, e.g. architecture.input_modalities.
 	ModelMetadata map[string]map[string]json.RawMessage `json:"model_metadata"`
 }
@@ -70,10 +76,11 @@ type router struct {
 
 func defaultConfig() Config {
 	return Config{
-		Listen:                   "127.0.0.1:1234",
-		DiscoveryIntervalSeconds: 15,
-		DiscoveryTimeoutSeconds:  4,
-		MaxRequestBytes:          32 << 20,
+		Listen:                       "127.0.0.1:1234",
+		DiscoveryIntervalSeconds:     15,
+		DiscoveryTimeoutSeconds:      4,
+		MaxRequestBytes:              32 << 20,
+		ResponseHeaderTimeoutSeconds: 600,
 	}
 }
 
@@ -91,8 +98,8 @@ func loadConfig(path string) (Config, error) {
 	if config.Listen == "" || len(config.Endpoints) == 0 {
 		return Config{}, errors.New("listen and at least one endpoint are required")
 	}
-	if config.DiscoveryIntervalSeconds < 1 || config.DiscoveryTimeoutSeconds < 1 || config.MaxRequestBytes < 1024 {
-		return Config{}, errors.New("invalid discovery interval, timeout, or request size")
+	if config.DiscoveryIntervalSeconds < 1 || config.DiscoveryTimeoutSeconds < 1 || config.MaxRequestBytes < 1024 || config.ResponseHeaderTimeoutSeconds < 1 {
+		return Config{}, errors.New("invalid discovery interval, timeout, response header timeout, or request size")
 	}
 	names := map[string]bool{}
 	for index, item := range config.Endpoints {
@@ -101,6 +108,16 @@ func loadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("invalid or duplicate endpoint at index %d", index)
 		}
 		names[item.Name] = true
+		if item.APIKey != "" && item.APIKeyEnv != "" {
+			return Config{}, fmt.Errorf("endpoint %q: set api_key or api_key_env, not both", item.Name)
+		}
+		if item.APIKeyEnv != "" {
+			key := os.Getenv(item.APIKeyEnv)
+			if key == "" {
+				return Config{}, fmt.Errorf("endpoint %q: environment variable %s is empty", item.Name, item.APIKeyEnv)
+			}
+			config.Endpoints[index].APIKey = key
+		}
 	}
 	for model, fields := range config.ModelMetadata {
 		if _, ok := fields["id"]; ok {
@@ -129,7 +146,7 @@ func (r *router) withMetadata(id string, raw json.RawMessage) json.RawMessage {
 	return merged
 }
 
-func newEndpoint(config EndpointConfig) (*endpoint, error) {
+func newEndpoint(config EndpointConfig, responseHeaderTimeout time.Duration) (*endpoint, error) {
 	target, err := url.Parse(strings.TrimRight(config.URL, "/"))
 	if err != nil {
 		return nil, err
@@ -139,7 +156,13 @@ func newEndpoint(config EndpointConfig) (*endpoint, error) {
 	proxy.Director = func(request *http.Request) {
 		originalDirector(request)
 		request.Host = target.Host
+		if config.APIKey != "" {
+			request.Header.Set("Authorization", "Bearer "+config.APIKey)
+		}
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = responseHeaderTimeout
+	proxy.Transport = transport
 	proxy.FlushInterval = -1
 	proxy.ErrorHandler = func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
 		log.Printf("proxy %s: %v", config.Name, proxyErr)
@@ -155,7 +178,7 @@ func newRouter(config Config) (*router, error) {
 		snapshot: registrySnapshot{},
 	}
 	for _, item := range config.Endpoints {
-		upstream, err := newEndpoint(item)
+		upstream, err := newEndpoint(item, time.Duration(config.ResponseHeaderTimeoutSeconds)*time.Second)
 		if err != nil {
 			return nil, err
 		}
@@ -181,7 +204,15 @@ func (r *router) discover() {
 				r.metrics.discoveries.WithLabelValues(item.config.Name, outcome).Inc()
 			}()
 			modelsURL := strings.TrimRight(item.config.URL, "/") + "/v1/models"
-			response, err := r.client.Get(modelsURL)
+			discoveryRequest, err := http.NewRequest(http.MethodGet, modelsURL, nil)
+			if err != nil {
+				results <- result{endpoint: item, err: err}
+				return
+			}
+			if item.config.APIKey != "" {
+				discoveryRequest.Header.Set("Authorization", "Bearer "+item.config.APIKey)
+			}
+			response, err := r.client.Do(discoveryRequest)
 			if err != nil {
 				results <- result{endpoint: item, err: err}
 				return
