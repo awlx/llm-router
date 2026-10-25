@@ -41,6 +41,7 @@ Use a model ID from `GET /v1/models`.
 | `listen` | `127.0.0.1:1234` | Address and port for the router. |
 | `discovery_interval_seconds` | `15` | Time between model list updates. |
 | `discovery_timeout_seconds` | `4` | Time limit for one model list request. |
+| `discovery_grace_seconds` | `60` | Time to keep the models of a server after its model list fails. Set `0` to remove the models at once. |
 | `max_request_bytes` | `33554432` | Maximum request body size. |
 | `shutdown_timeout_seconds` | `30` | Time limit for open requests and streams after `SIGTERM` or `SIGINT`. |
 | `response_header_timeout_seconds` | `600` | Time limit for the response headers of a server. Streams after the headers have no time limit. |
@@ -54,6 +55,20 @@ Use a model ID from `GET /v1/models`.
 If a server has an API key, the router sends `Authorization: Bearer <key>`
 to that server. This replaces the `Authorization` header of the client for
 that server only. For other servers, the router sends the client header unchanged.
+
+## Server failures
+
+If the model list of a server fails, the router keeps the last known models of
+that server for `discovery_grace_seconds`. During this time:
+
+- Requests for these models get `503` with the error code `model_unavailable`
+  and a `Retry-After` header.
+- `GET /v1/models` continues to show these models.
+- A model ID that is also on a different server continues to be a duplicate.
+- `/health` shows these models in `unavailable_models`.
+
+When the server is available again, the router sends requests to it again.
+After the grace period, the router removes the models, and requests get `404`.
 
 ## Shutdown
 

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -39,8 +40,10 @@ type Config struct {
 	// ResponseHeaderTimeoutSeconds limits the wait for upstream response headers; streams are not limited.
 	ResponseHeaderTimeoutSeconds int `json:"response_header_timeout_seconds"`
 	// ShutdownTimeoutSeconds limits the wait for open requests and streams on SIGTERM or SIGINT.
-	ShutdownTimeoutSeconds int              `json:"shutdown_timeout_seconds"`
-	Endpoints              []EndpointConfig `json:"endpoints"`
+	ShutdownTimeoutSeconds int `json:"shutdown_timeout_seconds"`
+	// DiscoveryGraceSeconds keeps the models of a failed endpoint for this time and returns 503 for them.
+	DiscoveryGraceSeconds int              `json:"discovery_grace_seconds"`
+	Endpoints             []EndpointConfig `json:"endpoints"`
 	// Top-level fields merged into a model's /v1/models entry, e.g. architecture.input_modalities.
 	ModelMetadata map[string]map[string]json.RawMessage `json:"model_metadata"`
 	// Browser origins allowed by CORS, or "*". Empty disables CORS. LLM_ROUTER_CORS_ORIGINS overrides it.
@@ -70,7 +73,14 @@ type registrySnapshot struct {
 	conflicts map[string][]string
 	documents map[string]json.RawMessage
 	errors    map[string]string
-	updatedAt time.Time
+	// unavailable maps model IDs of endpoints in the discovery grace period to the endpoint name.
+	unavailable map[string]string
+	updatedAt   time.Time
+}
+
+type seenModels struct {
+	documents map[string]json.RawMessage
+	at        time.Time
 }
 
 type router struct {
@@ -82,6 +92,9 @@ type router struct {
 	snapshot  registrySnapshot
 	// corsOrigins is nil when CORS is disabled.
 	corsOrigins map[string]bool
+	// discoveryMu serializes discovery cycles and protects lastSeen.
+	discoveryMu sync.Mutex
+	lastSeen    map[string]seenModels
 }
 
 func defaultConfig() Config {
@@ -92,6 +105,7 @@ func defaultConfig() Config {
 		MaxRequestBytes:              32 << 20,
 		ResponseHeaderTimeoutSeconds: 600,
 		ShutdownTimeoutSeconds:       30,
+		DiscoveryGraceSeconds:        60,
 	}
 }
 
@@ -109,8 +123,8 @@ func loadConfig(path string) (Config, error) {
 	if config.Listen == "" || len(config.Endpoints) == 0 {
 		return Config{}, errors.New("listen and at least one endpoint are required")
 	}
-	if config.DiscoveryIntervalSeconds < 1 || config.DiscoveryTimeoutSeconds < 1 || config.MaxRequestBytes < 1024 || config.ResponseHeaderTimeoutSeconds < 1 || config.ShutdownTimeoutSeconds < 1 {
-		return Config{}, errors.New("invalid discovery interval, timeout, response header timeout, shutdown timeout, or request size")
+	if config.DiscoveryIntervalSeconds < 1 || config.DiscoveryTimeoutSeconds < 1 || config.MaxRequestBytes < 1024 || config.ResponseHeaderTimeoutSeconds < 1 || config.ShutdownTimeoutSeconds < 1 || config.DiscoveryGraceSeconds < 0 {
+		return Config{}, errors.New("invalid discovery interval, timeout, grace, response header timeout, shutdown timeout, or request size")
 	}
 	names := map[string]bool{}
 	for index, item := range config.Endpoints {
@@ -212,6 +226,7 @@ func newRouter(config Config) (*router, error) {
 		config:   config,
 		client:   &http.Client{Timeout: time.Duration(config.DiscoveryTimeoutSeconds) * time.Second},
 		snapshot: registrySnapshot{},
+		lastSeen: map[string]seenModels{},
 	}
 	for _, item := range config.Endpoints {
 		upstream, err := newEndpoint(item, time.Duration(config.ResponseHeaderTimeoutSeconds)*time.Second)
@@ -284,14 +299,29 @@ func (r *router) discover() {
 		}(upstream)
 	}
 
+	r.discoveryMu.Lock()
+	defer r.discoveryMu.Unlock()
+	now := time.Now()
+	grace := time.Duration(r.config.DiscoveryGraceSeconds) * time.Second
 	discovered := map[string][]*endpoint{}
 	documents := map[string]json.RawMessage{}
 	errorsByEndpoint := map[string]string{}
+	stale := map[*endpoint]bool{}
 	for range r.endpoints {
 		item := <-results
+		name := item.endpoint.config.Name
 		if item.err != nil {
-			errorsByEndpoint[item.endpoint.config.Name] = item.err.Error()
-			continue
+			errorsByEndpoint[name] = item.err.Error()
+			previous, ok := r.lastSeen[name]
+			if !ok || now.Sub(previous.at) > grace {
+				delete(r.lastSeen, name)
+				continue
+			}
+			// Keep the last known models during the grace period, so that duplicate detection stays stable.
+			item.documents = previous.documents
+			stale[item.endpoint] = true
+		} else {
+			r.lastSeen[name] = seenModels{documents: item.documents, at: now}
 		}
 		for id, document := range item.documents {
 			discovered[id] = append(discovered[id], item.endpoint)
@@ -301,7 +331,12 @@ func (r *router) discover() {
 
 	models := map[string]*endpoint{}
 	conflicts := map[string][]string{}
+	unavailable := map[string]string{}
 	for id, upstreams := range discovered {
+		if len(upstreams) == 1 && stale[upstreams[0]] {
+			unavailable[id] = upstreams[0].config.Name
+			continue
+		}
 		if len(upstreams) == 1 {
 			models[id] = upstreams[0]
 			continue
@@ -314,9 +349,9 @@ func (r *router) discover() {
 	}
 
 	r.mu.Lock()
-	r.snapshot = registrySnapshot{models: models, conflicts: conflicts, documents: documents, errors: errorsByEndpoint, updatedAt: time.Now()}
+	r.snapshot = registrySnapshot{models: models, conflicts: conflicts, documents: documents, errors: errorsByEndpoint, unavailable: unavailable, updatedAt: time.Now()}
 	r.mu.Unlock()
-	log.Printf("discovery: %d models, %d conflicts, %d unavailable endpoints", len(models), len(conflicts), len(errorsByEndpoint))
+	log.Printf("discovery: %d models, %d conflicts, %d unavailable endpoints, %d models in grace period", len(models), len(conflicts), len(errorsByEndpoint), len(unavailable))
 }
 
 func (r *router) runDiscovery() {
@@ -374,7 +409,7 @@ func (r *router) health(writer http.ResponseWriter) {
 	r.mu.RLock()
 	payload := map[string]any{
 		"status": "ok", "models": len(r.snapshot.models), "conflicts": r.snapshot.conflicts,
-		"endpoint_errors": r.snapshot.errors, "updated_at": r.snapshot.updatedAt,
+		"endpoint_errors": r.snapshot.errors, "unavailable_models": r.snapshot.unavailable, "updated_at": r.snapshot.updatedAt,
 	}
 	r.mu.RUnlock()
 	writer.Header().Set("Content-Type", "application/json")
@@ -457,11 +492,19 @@ func (r *router) proxy(writer http.ResponseWriter, request *http.Request) {
 	r.mu.RLock()
 	conflict := append([]string(nil), r.snapshot.conflicts[model]...)
 	upstream := r.snapshot.models[model]
+	unavailable := r.snapshot.unavailable[model]
 	r.mu.RUnlock()
 	if len(conflict) > 0 {
 		observation.model, observation.outcome = model, "conflict"
 		logModelRequest(request, model, "conflict", "")
 		writeError(writer, http.StatusConflict, fmt.Sprintf("model %q is served by more than one endpoint", model), "invalid_request_error", "model_conflict")
+		return
+	}
+	if unavailable != "" {
+		observation.endpoint, observation.model, observation.outcome = unavailable, model, "endpoint_unavailable"
+		logModelRequest(request, model, "endpoint_unavailable", unavailable)
+		writer.Header().Set("Retry-After", strconv.Itoa(r.config.DiscoveryIntervalSeconds))
+		writeError(writer, http.StatusServiceUnavailable, fmt.Sprintf("model %q is temporarily unavailable", model), "server_error", "model_unavailable")
 		return
 	}
 	if upstream == nil {
