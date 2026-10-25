@@ -21,6 +21,6 @@ services:
     ports:
       - "127.0.0.1:18235:1234"
     environment:
-      LLM_ROUTER_CONFIG: /etc/llm-router/router.json
+      LLM_ROUTER_CONFIG: /etc/llm-router/config.json
     volumes:
-      - ./local-test/router.json:/etc/llm-router/router.json:ro
+      - ./local-test/config.json:/etc/llm-router/config.json:ro

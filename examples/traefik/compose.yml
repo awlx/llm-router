@@ -27,9 +27,9 @@ services:
     build: ../..
     restart: unless-stopped
     environment:
-      LLM_ROUTER_CONFIG: /etc/llm-router/router.json
+      LLM_ROUTER_CONFIG: /etc/llm-router/config.json
     volumes:
-      - ./router.json:/etc/llm-router/router.json:ro
+      - ./config.json:/etc/llm-router/config.json:ro
 
 secrets:
   hetzner_api_token:

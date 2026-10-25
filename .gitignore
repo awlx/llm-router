@@ -1,6 +1,6 @@
 /llm-router
 /bin/
-/router.json
+/config.json
 /.cache/
 .env
 .env.*
@@ -12,7 +12,7 @@
 __pycache__/
 .DS_Store
 secrets/
-/examples/traefik/router.json
+/examples/traefik/config.json
 /dist/
 /upgrade-test/
 /archive/
