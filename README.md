@@ -204,10 +204,14 @@ Example dashboards with sample data:
 Dashboard tests need Node.js 22 or newer.
 
 ```sh
+gofmt -l .
 go test -race ./...
 go vet ./...
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
 node --test docs/refine-dashboards.test.mjs
 ```
+
+`gofmt -l .` must show no files.
 
 ## License
 

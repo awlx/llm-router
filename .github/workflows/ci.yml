@@ -18,8 +18,20 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
+      - name: gofmt
+        if: matrix.go == 'stable'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Run gofmt -w on these files:"
+            echo "$unformatted"
+            exit 1
+          fi
       - run: go test -race ./...
       - run: go vet ./...
+      - name: staticcheck
+        if: matrix.go == 'stable'
+        run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./...
       - run: CGO_ENABLED=0 go build -trimpath -o /tmp/llm-router .
       - run: node --test docs/refine-dashboards.test.mjs
       - run: docker compose -f docker-compose.test.yml config --quiet
