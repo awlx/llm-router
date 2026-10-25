@@ -49,6 +49,7 @@ Use a model ID from `GET /v1/models`.
 | `endpoints[].api_key` | | API key for a server that needs authentication, for example vLLM with `--api-key`. |
 | `endpoints[].api_key_env` | | Name of an environment variable that contains the API key. Use this or `api_key`, not both. |
 | `model_metadata` | | Extra fields for model entries in `GET /v1/models`. |
+| `cors_allowed_origins` | | Browser origins for CORS. See [Browser clients](#browser-clients). |
 
 If a server has an API key, the router sends `Authorization: Bearer <key>`
 to that server. This replaces the `Authorization` header of the client for
