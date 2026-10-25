@@ -343,7 +343,7 @@ func TestMetricsDiscoveryFailureRemovesRoutes(t *testing.T) {
 	var unavailable atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if unavailable.Load() {
-			http.Error(writer, "unavailable", 503)
+			http.Error(writer, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		_, _ = io.WriteString(writer, `{"data":[{"id":"served-model"}]}`)
