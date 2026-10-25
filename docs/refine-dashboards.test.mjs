@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { boundPattern, refineDashboard, signedNetworkTraffic, sizeBounds, sizeBucketTargets } from './refine-dashboards.mjs';
 
@@ -7,6 +7,15 @@ const files = [
   new URL('./grafana-overview.json', import.meta.url),
   new URL('./grafana-dashboard.json', import.meta.url),
 ];
+// goSources reads all non-test Go files under internal/, so that file moves do not break the tests.
+const goSources = () => {
+  const root = new URL('../internal/', import.meta.url);
+  return readdirSync(root, { recursive: true })
+    .filter(name => name.endsWith('.go') && !name.endsWith('_test.go'))
+    .sort()
+    .map(name => readFileSync(new URL(name, root), 'utf8'))
+    .join('\n');
+};
 const flatten = panels => panels.flatMap(panel => [panel, ...flatten(panel.panels || [])]);
 
 test('published dashboards use portable data sources and neutral selections', () => {
@@ -149,7 +158,7 @@ for (const file of files) {
 }
 
 test('size buckets match exporter boundaries and canonical numeric labels', () => {
-  const exporter = readFileSync(new URL('../metrics.go', import.meta.url), 'utf8');
+  const exporter = goSources();
   const bounds = exporter.match(/sizeBuckets := \[\]float64\{([^}]+)\}/)[1].split(',').map(Number);
   assert.deepEqual(sizeBounds, bounds);
   for (const value of sizeBounds) {
@@ -195,7 +204,7 @@ test('unnamed scalar stats never display their PromQL as a name', () => {
 });
 
 function exporterMetrics() {
-  const source = readFileSync(new URL('../metrics.go', import.meta.url), 'utf8');
+  const source = goSources();
   const shared = source.match(/labels := \[\]string\{([^}]*)\}/)[1];
   const parse = list => list.match(/"([^"]+)"/g)?.map(item => item.slice(1, -1)) || [];
   const metrics = new Map();
