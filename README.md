@@ -117,6 +117,7 @@ Run `llm-router -version` to show the installed version.
 | `endpoints[].api_key_env` | | Name of an environment variable that contains the API key. Use this or `api_key`, not both. |
 | `client_api_key` | | API key for clients. Clients send `Authorization: Bearer <key>`. The environment variable `LLM_ROUTER_API_KEY` has priority. |
 | `auth_exempt_paths` | | Paths that do not need the client API key. Allowed values: `/metrics`, `/health`, `/ready`. |
+| `trusted_proxies` | `["127.0.0.0/8", "::1/128"]` | Proxy addresses or CIDR ranges that can set the client IP with `X-Forwarded-For`. Set `[]` to ignore the header. |
 | `model_metadata` | | Extra fields for model entries in `GET /v1/models`. |
 | `cors_allowed_origins` | | Browser origins for CORS. See [Browser clients](#browser-clients). |
 
@@ -190,7 +191,8 @@ server responses and sends its own headers.
 - No load balancing, failover or audio routes.
 - No built-in TLS. Keep the router on loopback, or put a TLS proxy in front of it.
 - Client authentication is optional. Without it, all clients can use all routes.
-- Logs include client IPs and model IDs. Health errors can include server addresses.
+- Logs include client IPs and model IDs. The router reads the client IP from
+  `X-Forwarded-For` only if the request comes from an address in `trusted_proxies`. Health errors can include server addresses.
 
 ## Monitoring
 
