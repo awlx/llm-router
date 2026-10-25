@@ -1,0 +1,41 @@
+services:
+  traefik:
+    image: traefik:v3.7.16
+    restart: unless-stopped
+    command:
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.transport.respondingtimeouts.writetimeout=0s
+      - --serverstransport.forwardingtimeouts.responseheadertimeout=0s
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?Set ACME_EMAIL in .env}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/${ACME_STORAGE_FILE:-acme-staging.json}
+      - --certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-staging-v02.api.letsencrypt.org/directory}
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=hetzner
+    environment:
+      ROUTER_DOMAIN: ${ROUTER_DOMAIN:?Set ROUTER_DOMAIN in .env}
+      HETZNER_API_TOKEN_FILE: /run/secrets/hetzner_api_token
+    ports:
+      - "443:443"
+    secrets:
+      - hetzner_api_token
+      - router_users
+    volumes:
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - acme:/letsencrypt
+
+  router:
+    build: ../..
+    restart: unless-stopped
+    environment:
+      LLM_ROUTER_CONFIG: /etc/llm-router/router.json
+    volumes:
+      - ./router.json:/etc/llm-router/router.json:ro
+
+secrets:
+  hetzner_api_token:
+    file: ./secrets/hetzner-api-token
+  router_users:
+    file: ./secrets/router-users
+
+volumes:
+  acme:

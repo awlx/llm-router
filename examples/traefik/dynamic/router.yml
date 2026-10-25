@@ -1,0 +1,23 @@
+http:
+  routers:
+    llm:
+      rule: 'Host(`{{ env "ROUTER_DOMAIN" }}`)'
+      entryPoints:
+        - websecure
+      service: llm
+      middlewares:
+        - login
+      tls:
+        certResolver: letsencrypt
+
+  middlewares:
+    login:
+      basicAuth:
+        usersFile: /run/secrets/router_users
+        removeHeader: true
+
+  services:
+    llm:
+      loadBalancer:
+        servers:
+          - url: http://router:1234

@@ -11,3 +11,5 @@
 *.key
 __pycache__/
 .DS_Store
+secrets/
+/examples/traefik/router.json

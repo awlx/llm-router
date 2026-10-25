@@ -40,6 +40,8 @@ curl -q -fsS http://127.0.0.1:18235/v1/models
 docker compose -f docker-compose.test.yml down
 ```
 
+For HTTPS, use the [Traefik example with Let's Encrypt and Hetzner DNS](examples/traefik).
+
 ## Limits and access
 
 - No load balancing, failover, embeddings or audio routes.
@@ -55,6 +57,12 @@ Metrics cover requests, errors, active streams, duration and body sizes.
 Import the [router dashboard](docs/grafana-dashboard.json) into Grafana.
 The optional [fleet overview](docs/grafana-overview.json) also needs
 [vLLM Fleet Dashboard](https://github.com/awlx/vllm-dashboard).
+
+Example dashboards with sample data:
+
+![Router dashboard](docs/images/grafana-router.png)
+
+![Fleet overview](docs/images/grafana-fleet.png)
 
 ## Tests
 

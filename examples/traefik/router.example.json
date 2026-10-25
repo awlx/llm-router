@@ -1,0 +1,6 @@
+{
+  "listen": "0.0.0.0:1234",
+  "endpoints": [
+    {"name": "model-server", "url": "http://192.0.2.10:8000"}
+  ]
+}
