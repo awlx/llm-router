@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: stable
           cache: false
 
       - name: Install nfpm
@@ -43,7 +43,8 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        run: go build -trimpath -ldflags="-s -w" -o llm-router .
+        run: |
+          go build -trimpath -ldflags="-s -w -X main.version=$PACKAGE_VERSION" -o llm-router .
 
       - name: Build deb and archive
         env:
@@ -73,6 +74,7 @@ jobs:
           dpkg --compare-versions \
             "$(dpkg-deb -f "$new" Version)" gt "$(dpkg-deb -f "$old" Version)"
           sudo ./packaging/test-deb-install.sh "$old" "$new"
+          test "$(./llm-router -version)" = "$PACKAGE_VERSION"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -184,6 +186,7 @@ jobs:
               > /etc/apt/sources.list.d/llm-router.list
             apt-get update -o APT::Update::Error-Mode=any
             apt-get install -y llm-router
+            test "$(llm-router -version)" = "$(dpkg-query -W -f="\${Version}" llm-router)"
             LLM_ROUTER_CONFIG=/etc/llm-router/config.json llm-router &
             for i in $(seq 30); do
               curl -fsS http://127.0.0.1:1234/health && exit 0

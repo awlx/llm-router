@@ -38,6 +38,7 @@ getent passwd llm-router >/dev/null || fail "system user missing"
 [ "$(getent passwd llm-router | cut -d: -f7)" = "/usr/sbin/nologin" ] ||
 	fail "system user has a login shell"
 test -x /usr/bin/llm-router || fail "binary missing"
+/usr/bin/llm-router -version >/dev/null || fail "llm-router -version failed"
 cmp -s "$example" "$config" || fail "$config is not the example configuration"
 dpkg-query -W -f='${Conffiles}\n' llm-router | grep -q " $config " ||
 	fail "$config is not a conffile"

@@ -37,8 +37,9 @@ jobs:
 
       - name: Test image
         run: |
-          docker buildx build --load -t llm-router:test .
+          docker buildx build --load --build-arg VERSION=test-version -t llm-router:test .
           test "$(docker image inspect -f '{{.Config.User}}' llm-router:test)" = "65532:65532"
+          test "$(docker run --rm llm-router:test -version)" = "test-version"
           sed 's/127.0.0.1:1234/0.0.0.0:1234/' config.example.json > image-test.json
           docker run -d --name router -p 127.0.0.1:18234:1234 \
             -v "$PWD/image-test.json:/etc/llm-router/config.json:ro" llm-router:test
@@ -62,5 +63,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

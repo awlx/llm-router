@@ -95,6 +95,8 @@ Set your client's base URL to `http://127.0.0.1:1234/v1`.
 Use a model ID from `GET /v1/models`.
 `GET /v1/models/{id}` returns one model.
 
+Run `llm-router -version` to show the installed version.
+
 ## Configuration
 
 | Key | Default | Description |
