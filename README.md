@@ -73,6 +73,8 @@ For HTTPS, use the [Traefik example with Let's Encrypt and Hetzner DNS](examples
 ## Monitoring
 
 Use `/health` for discovery status and `/metrics` for Prometheus metrics.
+`/health` always returns 200 while the process runs. Use it as a liveness check.
+`/ready` returns 503 when no model is routable. Use it as a readiness check.
 Metrics cover requests, errors, active streams, duration and body sizes.
 
 Import the [router dashboard](docs/grafana-dashboard.json) into Grafana.

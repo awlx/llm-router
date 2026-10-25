@@ -310,6 +310,21 @@ func (r *router) model(writer http.ResponseWriter, id string) {
 	_, _ = writer.Write(append(append(json.RawMessage(nil), document...), '\n'))
 }
 
+// ready reports 503 until discovery finds at least one routable model.
+func (r *router) ready(writer http.ResponseWriter) {
+	r.mu.RLock()
+	models := len(r.snapshot.models)
+	r.mu.RUnlock()
+	status, code := "ready", http.StatusOK
+	if models == 0 {
+		status, code = "not_ready", http.StatusServiceUnavailable
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(code)
+	_ = json.NewEncoder(writer).Encode(map[string]any{"status": status, "models": models})
+}
+
 func (r *router) health(writer http.ResponseWriter) {
 	r.mu.RLock()
 	payload := map[string]any{
@@ -436,6 +451,8 @@ func (r *router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		r.metrics.handler.ServeHTTP(writer, request)
 	case request.Method == http.MethodGet && request.URL.Path == "/health":
 		r.health(writer)
+	case request.Method == http.MethodGet && request.URL.Path == "/ready":
+		r.ready(writer)
 	case request.Method == http.MethodGet && request.URL.Path == "/v1/models":
 		r.models(writer)
 	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/models/") && len(request.URL.Path) > len("/v1/models/"):
