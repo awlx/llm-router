@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>llm-router Package Repository</title></head>
+<body>
+<h1>llm-router Package Repository</h1>
+<h2>Debian and Ubuntu</h2>
+<pre>
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://awlx.github.io/llm-router/llm-router.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/llm-router.gpg
+echo "deb [signed-by=/etc/apt/keyrings/llm-router.gpg] https://awlx.github.io/llm-router stable main" | sudo tee /etc/apt/sources.list.d/llm-router.list
+sudo apt update
+sudo apt install llm-router
+</pre>
+<p>Source and documentation: <a href="https://github.com/awlx/llm-router">github.com/awlx/llm-router</a></p>
+</body></html>

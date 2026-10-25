@@ -1,0 +1,69 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=sha,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=pr
+          flavor: |
+            latest=auto
+
+      - name: Test image
+        run: |
+          docker buildx build --load --build-arg VERSION=test-version -t llm-router:test .
+          test "$(docker image inspect -f '{{.Config.User}}' llm-router:test)" = "65532:65532"
+          test "$(docker run --rm llm-router:test -version)" = "test-version"
+          sed 's/127.0.0.1:1234/0.0.0.0:1234/' config.example.json > image-test.json
+          docker run -d --name router -p 127.0.0.1:18234:1234 \
+            -v "$PWD/image-test.json:/etc/llm-router/config.json:ro" llm-router:test
+          for i in $(seq 30); do
+            curl -fsS http://127.0.0.1:18234/health && exit 0
+            sleep 1
+          done
+          docker logs router
+          exit 1
+
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

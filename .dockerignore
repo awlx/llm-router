@@ -2,5 +2,4 @@
 !Dockerfile
 !go.mod
 !go.sum
-!main.go
-!metrics.go
+!*.go

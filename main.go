@@ -649,7 +649,12 @@ func serve(ctx context.Context, server *http.Server, listener net.Listener, time
 
 func main() {
 	configPath := flag.String("config", "", "path to the JSON config file (default: $LLM_ROUTER_CONFIG)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	path := *configPath
 	if path == "" {
 		path = os.Getenv("LLM_ROUTER_CONFIG")
@@ -682,7 +687,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	log.Printf("llm-router listening on %s with %d endpoints", config.Listen, len(config.Endpoints))
+	log.Printf("llm-router %s listening on %s with %d endpoints", version, config.Listen, len(config.Endpoints))
 	if err := serve(ctx, server, listener, time.Duration(config.ShutdownTimeoutSeconds)*time.Second); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
