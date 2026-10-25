@@ -489,3 +489,29 @@ func TestGetSingleModel(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestReadyRequiresRoutableModel(t *testing.T) {
+	var unavailable atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if unavailable.Load() {
+			http.Error(writer, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(writer, `{"data":[{"id":"served-model"}]}`)
+	}))
+	defer server.Close()
+	router := testRouter(t, EndpointConfig{Name: "node-one", URL: server.URL})
+	check := func(path string, status int, body string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != status || !strings.Contains(response.Body.String(), body) {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	check("/ready", http.StatusOK, `"status":"ready"`)
+	unavailable.Store(true)
+	router.discover()
+	check("/ready", http.StatusServiceUnavailable, `"status":"not_ready"`)
+	check("/health", http.StatusOK, `"status":"ok"`)
+}
