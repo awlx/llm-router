@@ -9,7 +9,63 @@ The router reads each server's model list and sends requests to the matching ser
 - Rejects duplicate model IDs instead of choosing a server.
 - Returns errors in the OpenAI error format.
 
-## Quick start
+## Install
+
+Each release has packages for `amd64` and `arm64`.
+
+### Debian and Ubuntu with APT
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://awlx.github.io/llm-router/llm-router.gpg.key \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/llm-router.gpg
+echo "deb [signed-by=/etc/apt/keyrings/llm-router.gpg] https://awlx.github.io/llm-router stable main" \
+  | sudo tee /etc/apt/sources.list.d/llm-router.list
+sudo apt update
+sudo apt install llm-router
+```
+
+The package installs these files:
+
+- `/usr/bin/llm-router`: the binary.
+- `/etc/llm-router/config.json`: the configuration. Upgrades keep your changes.
+- `/lib/systemd/system/llm-router.service`: a hardened systemd unit. The
+  service runs as the `llm-router` system user.
+
+The package enables the service, but does not start it. Edit the
+configuration first, then start the service:
+
+```sh
+sudoedit /etc/llm-router/config.json
+sudo systemctl start llm-router
+```
+
+Upgrades restart the service if it runs. To install a downloaded release
+file, run `sudo apt install ./llm-router_<version>_<arch>.deb`.
+
+### Docker
+
+Images for `linux/amd64` and `linux/arm64` are on
+`ghcr.io/awlx/llm-router`. The image runs as a non-root user.
+
+In the container, the router must listen on all interfaces. Copy
+`config.example.json` to `router.json`, set `"listen": "0.0.0.0:1234"`, and
+set your server addresses. Then run:
+
+```sh
+docker run -d --name llm-router --restart unless-stopped \
+  -p 127.0.0.1:1234:1234 \
+  -v "$PWD/router.json:/etc/llm-router/config.json:ro" \
+  ghcr.io/awlx/llm-router:latest
+```
+
+### Binary
+
+Download `llm-router_<version>_linux_<arch>.tar.gz` from the
+[releases](https://github.com/awlx/llm-router/releases). Use `SHA256SUMS`
+to verify the file.
+
+### Build from source
 
 You need Go 1.23 or newer.
 
@@ -17,6 +73,11 @@ You need Go 1.23 or newer.
 git clone https://github.com/awlx/llm-router.git
 cd llm-router
 go build -trimpath -o llm-router .
+```
+
+## Configure
+
+```sh
 cp config.example.json router.json
 ```
 

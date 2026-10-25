@@ -1,5 +1,6 @@
 [Unit]
 Description=Local LLM discovery router
+Documentation=https://github.com/awlx/llm-router
 After=network-online.target
 Wants=network-online.target
 
@@ -7,23 +8,33 @@ Wants=network-online.target
 Type=simple
 User=llm-router
 Group=llm-router
-Environment=LLM_ROUTER_CONFIG=/etc/llm-router/router.json
+Environment=LLM_ROUTER_CONFIG=/etc/llm-router/config.json
 ExecStart=/usr/local/bin/llm-router
 Restart=on-failure
 RestartSec=3
+UMask=0077
 NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 RestrictRealtime=true
+RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

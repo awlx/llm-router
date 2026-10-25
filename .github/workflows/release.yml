@@ -1,0 +1,214 @@
+name: Packages
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Debian packages and binary archives (amd64 + arm64)
+  deb:
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+
+      - name: Calculate package version
+        run: |
+          VERSION="$(./packaging/package-version.sh \
+            "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
+            "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA")"
+          echo "PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Validate packaging
+        if: matrix.goarch == 'amd64'
+        run: ./packaging/test-packaging.sh
+
+      - name: Build binary
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags="-s -w" -o llm-router .
+
+      - name: Build deb and archive
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          VERSION="$PACKAGE_VERSION" nfpm package -p deb -f nfpm.yaml -t dist/
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+
+          name="llm-router_${PACKAGE_VERSION}_linux_${GOARCH}"
+          mkdir -p "archive/$name"
+          cp llm-router LICENSE README.md config.example.json llm-router.service "archive/$name/"
+          tar -C archive -czf "dist/$name.tar.gz" --owner=0 --group=0 "$name"
+          tar -tzf "dist/$name.tar.gz"
+
+      - name: Test deb install and upgrade
+        if: matrix.goarch == 'amd64'
+        run: |
+          old="$(find dist -maxdepth 1 -name 'llm-router_*.deb' -print -quit)"
+          test -n "$old"
+          # Build a higher version of the same payload to test the upgrade.
+          mkdir -p upgrade-test
+          VERSION="${PACKAGE_VERSION}+upgradetest" GOARCH=amd64 \
+            nfpm package -p deb -f nfpm.yaml -t upgrade-test/
+          new="$(find upgrade-test -maxdepth 1 -name 'llm-router_*.deb' -print -quit)"
+          dpkg --compare-versions \
+            "$(dpkg-deb -f "$new" Version)" gt "$(dpkg-deb -f "$old" Version)"
+          sudo ./packaging/test-deb-install.sh "$old" "$new"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goarch }}
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  # GitHub Release (tags only)
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [deb]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: artifacts
+        run: sha256sum *.deb *.tar.gz > SHA256SUMS && cat SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --clobber artifacts/*.deb artifacts/*.tar.gz artifacts/SHA256SUMS
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --generate-notes \
+              artifacts/*.deb artifacts/*.tar.gz artifacts/SHA256SUMS
+          fi
+
+  # APT repository on GitHub Pages (tags only)
+  apt-repo:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: apt-repository
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Import GPG signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          test -n "$GPG_PRIVATE_KEY"
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          GPG_KEY_ID="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')"
+          test -n "$GPG_KEY_ID"
+          echo "GPG_KEY_ID=$GPG_KEY_ID" >> "$GITHUB_ENV"
+
+      - name: Build APT repository
+        run: |
+          mkdir -p repo/pool/main
+          find artifacts -name '*.deb' -exec cp {} repo/pool/main/ \;
+          ls -lh repo/pool/main/
+
+          cd repo
+          for arch in amd64 arm64; do
+            mkdir -p "dists/stable/main/binary-${arch}"
+            dpkg-scanpackages --multiversion --arch "$arch" pool/ \
+              > "dists/stable/main/binary-${arch}/Packages"
+            grep -q '^Package: llm-router$' "dists/stable/main/binary-${arch}/Packages"
+            gzip -k9n "dists/stable/main/binary-${arch}/Packages"
+          done
+
+          cd dists/stable
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin=llm-router \
+            -o APT::FTPArchive::Release::Label=llm-router \
+            -o APT::FTPArchive::Release::Suite=stable \
+            -o APT::FTPArchive::Release::Codename=stable \
+            -o APT::FTPArchive::Release::Architectures="amd64 arm64" \
+            -o APT::FTPArchive::Release::Components=main \
+            -o APT::FTPArchive::Release::Description="llm-router APT Repository" \
+            release . > Release
+          cat Release
+
+          gpg --batch --yes --default-key "$GPG_KEY_ID" -abs -o Release.gpg Release
+          gpg --batch --yes --default-key "$GPG_KEY_ID" --clearsign -o InRelease Release
+
+          cd "$GITHUB_WORKSPACE/repo"
+          gpg --armor --export "$GPG_KEY_ID" > llm-router.gpg.key
+          install -m 0644 "$GITHUB_WORKSPACE/packaging/package-repository-index.html" index.html
+
+      - name: Test APT repository
+        run: |
+          docker run --rm -v "$PWD/repo:/repo:ro" debian:stable-slim sh -euc '
+            apt-get update -qq
+            apt-get install -y -qq gpg curl >/dev/null
+            install -d -m 0755 /etc/apt/keyrings
+            gpg --dearmor -o /etc/apt/keyrings/llm-router.gpg < /repo/llm-router.gpg.key
+            echo "deb [signed-by=/etc/apt/keyrings/llm-router.gpg] file:/repo stable main" \
+              > /etc/apt/sources.list.d/llm-router.list
+            apt-get update -o APT::Update::Error-Mode=any
+            apt-get install -y llm-router
+            LLM_ROUTER_CONFIG=/etc/llm-router/config.json llm-router &
+            for i in $(seq 30); do
+              curl -fsS http://127.0.0.1:1234/health && exit 0
+              sleep 1
+            done
+            exit 1
+          '
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: repo
+
+  deploy-pages:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [apt-repo]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: apt-repository-deploy
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
