@@ -47,8 +47,10 @@ type Config struct {
 	// ClientAPIKey enables bearer-token authentication for clients. LLM_ROUTER_API_KEY overrides it.
 	ClientAPIKey string `json:"client_api_key,omitempty"`
 	// AuthExemptPaths lists paths that do not need the client API key: /metrics, /health or /ready.
-	AuthExemptPaths []string         `json:"auth_exempt_paths,omitempty"`
-	Endpoints       []EndpointConfig `json:"endpoints"`
+	AuthExemptPaths []string `json:"auth_exempt_paths,omitempty"`
+	// TrustedProxies lists proxy addresses or CIDR ranges. Only these proxies can set the client IP with X-Forwarded-For.
+	TrustedProxies []string         `json:"trusted_proxies"`
+	Endpoints      []EndpointConfig `json:"endpoints"`
 	// Top-level fields merged into a model's /v1/models entry, e.g. architecture.input_modalities.
 	ModelMetadata map[string]map[string]json.RawMessage `json:"model_metadata"`
 	// Browser origins allowed by CORS, or "*". Empty disables CORS. LLM_ROUTER_CORS_ORIGINS overrides it.
@@ -89,12 +91,13 @@ type seenModels struct {
 }
 
 type router struct {
-	metrics   *routerMetrics
-	config    Config
-	client    *http.Client
-	endpoints []*endpoint
-	mu        sync.RWMutex
-	snapshot  registrySnapshot
+	metrics        *routerMetrics
+	trustedProxies []*net.IPNet
+	config         Config
+	client         *http.Client
+	endpoints      []*endpoint
+	mu             sync.RWMutex
+	snapshot       registrySnapshot
 	// corsOrigins is nil when CORS is disabled.
 	corsOrigins map[string]bool
 	// discoveryMu serializes discovery cycles and protects lastSeen.
@@ -111,6 +114,7 @@ func defaultConfig() Config {
 		ResponseHeaderTimeoutSeconds: 600,
 		ShutdownTimeoutSeconds:       30,
 		DiscoveryGraceSeconds:        60,
+		TrustedProxies:               []string{"127.0.0.0/8", "::1/128"},
 	}
 }
 
@@ -133,6 +137,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if key := os.Getenv("LLM_ROUTER_API_KEY"); key != "" {
 		config.ClientAPIKey = key
+	}
+	if _, err := parseTrustedProxies(config.TrustedProxies); err != nil {
+		return Config{}, err
 	}
 	for _, path := range config.AuthExemptPaths {
 		if path != "/metrics" && path != "/health" && path != "/ready" {
@@ -241,6 +248,11 @@ func newRouter(config Config) (*router, error) {
 		snapshot: registrySnapshot{},
 		lastSeen: map[string]seenModels{},
 	}
+	trusted, err := parseTrustedProxies(config.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
+	result.trustedProxies = trusted
 	for _, item := range config.Endpoints {
 		upstream, err := newEndpoint(item, time.Duration(config.ResponseHeaderTimeoutSeconds)*time.Second)
 		if err != nil {
@@ -471,22 +483,69 @@ func readModel(request *http.Request, maxBytes int64) (string, error) {
 	return identity.Model, nil
 }
 
-func requestAddresses(request *http.Request) (clientIP, directIP, forwardedFor string) {
+func parseTrustedProxies(values []string) ([]*net.IPNet, error) {
+	result := make([]*net.IPNet, 0, len(values))
+	for _, value := range values {
+		if !strings.Contains(value, "/") {
+			ip := net.ParseIP(value)
+			if ip == nil {
+				return nil, fmt.Errorf("trusted_proxies: invalid address %q", value)
+			}
+			bits := 128
+			if ip.To4() != nil {
+				ip, bits = ip.To4(), 32
+			}
+			result = append(result, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
+			return nil, fmt.Errorf("trusted_proxies: invalid CIDR %q", value)
+		}
+		result = append(result, network)
+	}
+	return result, nil
+}
+
+func isTrusted(ip net.IP, trusted []*net.IPNet) bool {
+	for _, network := range trusted {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestAddresses uses X-Forwarded-For only when the direct peer is a trusted proxy.
+// It reads the header from right to left and stops at the first address that is not a trusted proxy.
+func requestAddresses(request *http.Request, trusted []*net.IPNet) (clientIP, directIP, forwardedFor string) {
 	directIP = request.RemoteAddr
 	if host, _, err := net.SplitHostPort(request.RemoteAddr); err == nil {
 		directIP = host
 	}
 	forwardedFor = strings.Join(request.Header.Values("X-Forwarded-For"), ", ")
 	clientIP = directIP
-	if first, _, _ := strings.Cut(forwardedFor, ","); net.ParseIP(strings.TrimSpace(first)) != nil {
-		clientIP = strings.TrimSpace(first)
+	direct := net.ParseIP(directIP)
+	if direct == nil || !isTrusted(direct, trusted) || forwardedFor == "" {
+		return clientIP, directIP, forwardedFor
+	}
+	hops := strings.Split(forwardedFor, ",")
+	for index := len(hops) - 1; index >= 0; index-- {
+		ip := net.ParseIP(strings.TrimSpace(hops[index]))
+		if ip == nil {
+			break
+		}
+		clientIP = ip.String()
+		if !isTrusted(ip, trusted) {
+			break
+		}
 	}
 	return clientIP, directIP, forwardedFor
 }
 
 // logRequest writes one summary line when a proxied request finishes. The caller holds o.mu.
 func logRequest(request *http.Request, o *requestObservation, duration time.Duration) {
-	clientIP, directIP, forwardedFor := requestAddresses(request)
+	clientIP, directIP, forwardedFor := requestAddresses(request, o.trustedProxies)
 	log.Printf("request client_ip=%q x_forwarded_for=%q direct_ip=%q method=%q path=%q model=%q endpoint=%q status=%d outcome=%q duration_ms=%d request_bytes=%d response_bytes=%d",
 		clientIP, forwardedFor, directIP, request.Method, request.URL.Path, o.requestedModel, o.endpoint, o.code, o.outcome, duration.Milliseconds(), o.inputBytes, o.bytes)
 }

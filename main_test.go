@@ -123,7 +123,7 @@ func TestRequestAddressesRejectsInvalidForwardedClient(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	request.RemoteAddr = "127.0.0.1:43210"
 	request.Header.Set("X-Forwarded-For", "not-an-ip")
-	clientIP, directIP, forwardedFor := requestAddresses(request)
+	clientIP, directIP, forwardedFor := requestAddresses(request, mustTrusted(t, "127.0.0.0/8"))
 	if clientIP != "127.0.0.1" || directIP != "127.0.0.1" || forwardedFor != "not-an-ip" {
 		t.Fatalf("addresses=%q %q %q", clientIP, directIP, forwardedFor)
 	}

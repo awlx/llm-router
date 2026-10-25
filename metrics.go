@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -50,6 +51,7 @@ func newRouterMetrics(owner *router) *routerMetrics {
 type requestObservation struct {
 	mu                              sync.Mutex
 	metrics                         *routerMetrics
+	trustedProxies                  []*net.IPNet
 	started                         time.Time
 	endpoint, model, route, outcome string
 	// requestedModel is the client's model field, for logs only; metrics use model.
@@ -71,7 +73,7 @@ func (body observedRequestBody) Read(data []byte) (int, error) {
 }
 
 func (r *router) observe(writer http.ResponseWriter, request *http.Request) (http.ResponseWriter, *requestObservation) {
-	observation := &requestObservation{metrics: r.metrics, started: time.Now(), route: request.URL.Path, outcome: "invalid_request"}
+	observation := &requestObservation{metrics: r.metrics, trustedProxies: r.trustedProxies, started: time.Now(), route: request.URL.Path, outcome: "invalid_request"}
 	if request.Body != nil {
 		request.Body = observedRequestBody{ReadCloser: request.Body, observation: observation}
 	}
