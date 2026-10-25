@@ -132,7 +132,15 @@ for (const file of files) {
         assert.match(panel.targets[2].expr, />= 100\)$/);
         assert(panel.targets.every(item => item.expr.includes('[$__rate_interval]')));
       }
-      assert.equal(charts.filter(panel => /samples per quantile window/.test(panel.title)).length, 2);
+      assert.equal(charts.filter(panel => /samples per quantile window/.test(panel.title)).length, 3);
+    }
+    if (dashboard.uid !== 'vllm-fleet-metrics') {
+      const ttft = charts.filter(panel => panel.targets?.some(item => item.expr?.includes('llm_router_time_to_first_byte_seconds')));
+      assert(ttft.some(panel => panel.type === 'heatmap'), 'missing time to first byte heatmap');
+      const quantiles = ttft.find(panel => panel.title === 'Time to first byte percentiles');
+      assert(quantiles, 'missing time to first byte percentiles');
+      assert.deepEqual(quantiles.targets.map(item => item.legendFormat), ['{{model}} p50', '{{model}} p95', '{{model}} p99']);
+      for (const panel of ttft) assert(panel.targets.every(item => !item.expr.includes('route=')), `${panel.title} filters on route, which the metric does not have`);
     }
     for (const panel of charts) {
       assert(!(panel.transformations || []).some(item => item.id === 'renameByRegex'), 'default charts must retain exact model IDs');
@@ -184,4 +192,56 @@ test('unnamed scalar stats never display their PromQL as a name', () => {
   assert.equal(result.targets[0].legendFormat, 'Routable models');
   assert.equal(result.fieldConfig.defaults.displayName, 'Routable models');
   assert.equal(result.options.textMode, 'value');
+});
+
+function exporterMetrics() {
+  const source = readFileSync(new URL('../metrics.go', import.meta.url), 'utf8');
+  const shared = source.match(/labels := \[\]string\{([^}]*)\}/)[1];
+  const parse = list => list.match(/"([^"]+)"/g)?.map(item => item.slice(1, -1)) || [];
+  const metrics = new Map();
+  for (const [, kind, name, labels] of source.matchAll(/prometheus\.New(Counter|Gauge|Histogram)Vec\(prometheus\.\w+Opts\{Name: "(\w+)".*?\}, (labels|\[\]string\{[^}]*\})\)/g)) {
+    const set = new Set(parse(labels === 'labels' ? shared : labels));
+    metrics.set(name, set);
+    if (kind === 'Histogram') {
+      metrics.set(`${name}_bucket`, new Set([...set, 'le']));
+      metrics.set(`${name}_count`, set);
+      metrics.set(`${name}_sum`, set);
+    }
+  }
+  for (const [, name, labels] of source.matchAll(/prometheus\.NewDesc\("(\w+)", "[^"]*", (nil|\[\]string\{[^}]*\})/g)) {
+    metrics.set(name, new Set(labels === 'nil' ? [] : parse(labels)));
+  }
+  return metrics;
+}
+
+test('dashboards query only router metrics and labels that the exporter has', () => {
+  const metrics = exporterMetrics();
+  assert(metrics.has('llm_router_time_to_first_byte_seconds_bucket'));
+  assert(metrics.get('llm_router_requests_total').has('outcome'));
+  assert(!metrics.get('llm_router_requests_total').has('result'));
+  const generic = new Set(['job', 'instance', '__name__']);
+  for (const file of files) {
+    const dashboard = JSON.parse(readFileSync(file, 'utf8'));
+    const queries = [
+      ...flatten(dashboard.panels).flatMap(panel => (panel.targets || []).filter(item => item.expr).map(item => ({ where: panel.title, expr: item.expr, legend: item.legendFormat || '' }))),
+      ...dashboard.templating.list.filter(variable => typeof (variable.query?.query ?? variable.query) === 'string').map(variable => ({ where: `$${variable.name}`, expr: variable.query?.query ?? variable.query, legend: '' })),
+    ];
+    for (const { where, expr, legend } of queries) {
+      const names = [...expr.matchAll(/\b(llm_router_\w+)/g)].map(match => match[1]);
+      for (const name of names) assert(metrics.has(name), `${where}: unknown metric ${name}`);
+      for (const [, name, selector] of expr.matchAll(/\b(llm_router_\w+)\{([^}]*)\}/g)) {
+        for (const [, label] of selector.matchAll(/(\w+)\s*(?:=~|!~|!=|=)/g)) {
+          assert(generic.has(label) || metrics.get(name).has(label), `${where}: ${name} has no label ${label}`);
+        }
+      }
+      if (!names.length || /vllm_dashboard_/.test(expr)) continue;
+      const known = new Set([...generic, ...names.flatMap(name => [...metrics.get(name)])]);
+      const grouped = [...expr.matchAll(/\b(?:by|on|ignoring|without)\s*\(([^)]*)\)/g)].flatMap(match => match[1].split(',').map(item => item.trim()).filter(Boolean));
+      const shown = [...legend.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map(match => match[1]);
+      const variable = expr.match(/label_values\([^,]+,\s*(\w+)\)/)?.[1];
+      for (const label of [...grouped, ...shown, ...(variable ? [variable] : [])]) {
+        assert(known.has(label), `${where}: label ${label} is not on ${names.join(', ')}`);
+      }
+    }
+  }
 });
