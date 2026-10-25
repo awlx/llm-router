@@ -436,10 +436,11 @@ func requestAddresses(request *http.Request) (clientIP, directIP, forwardedFor s
 	return clientIP, directIP, forwardedFor
 }
 
-func logModelRequest(request *http.Request, model, result, upstream string) {
+// logRequest writes one summary line when a proxied request finishes. The caller holds o.mu.
+func logRequest(request *http.Request, o *requestObservation, duration time.Duration) {
 	clientIP, directIP, forwardedFor := requestAddresses(request)
-	log.Printf("request client_ip=%q x_forwarded_for=%q direct_ip=%q model=%q path=%q result=%q upstream=%q",
-		clientIP, forwardedFor, directIP, model, request.URL.Path, result, upstream)
+	log.Printf("request client_ip=%q x_forwarded_for=%q direct_ip=%q method=%q path=%q model=%q endpoint=%q status=%d outcome=%q duration_ms=%d request_bytes=%d response_bytes=%d",
+		clientIP, forwardedFor, directIP, request.Method, request.URL.Path, o.requestedModel, o.endpoint, o.code, o.outcome, duration.Milliseconds(), o.inputBytes, o.bytes)
 }
 
 func (r *router) proxy(writer http.ResponseWriter, request *http.Request) {
@@ -454,23 +455,21 @@ func (r *router) proxy(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 		return
 	}
+	observation.requestedModel = model
 	r.mu.RLock()
 	conflict := append([]string(nil), r.snapshot.conflicts[model]...)
 	upstream := r.snapshot.models[model]
 	r.mu.RUnlock()
 	if len(conflict) > 0 {
 		observation.model, observation.outcome = model, "conflict"
-		logModelRequest(request, model, "conflict", "")
 		writeError(writer, http.StatusConflict, fmt.Sprintf("model %q is served by more than one endpoint", model), "invalid_request_error", "model_conflict")
 		return
 	}
 	if upstream == nil {
 		observation.outcome = "unknown_model"
-		logModelRequest(request, model, "unknown_model", "")
 		writeError(writer, http.StatusNotFound, fmt.Sprintf("model %q does not exist", model), "invalid_request_error", "model_not_found")
 		return
 	}
-	logModelRequest(request, model, "routed", upstream.config.Name)
 	observation.endpoint, observation.model, observation.outcome = upstream.config.Name, model, "completed"
 	inflight := r.metrics.inflight.WithLabelValues(upstream.config.Name, model)
 	inflight.Inc()

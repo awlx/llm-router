@@ -105,6 +105,9 @@ Use `/health` for discovery status and `/metrics` for Prometheus metrics.
 `/ready` returns 503 when no model is routable. Use it as a readiness check.
 Metrics cover requests, errors, active streams, duration and body sizes.
 
+The router writes one log line when each API request ends. The line has the
+client IP, model, server name, status, outcome, duration and body sizes.
+
 Import the [router dashboard](docs/grafana-dashboard.json) into Grafana.
 The optional [fleet overview](docs/grafana-overview.json) also needs
 [vLLM Fleet Dashboard](https://github.com/awlx/vllm-dashboard).

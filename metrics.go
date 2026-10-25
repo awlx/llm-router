@@ -52,9 +52,11 @@ type requestObservation struct {
 	metrics                         *routerMetrics
 	started                         time.Time
 	endpoint, model, route, outcome string
-	code                            int
-	bytes                           int64
-	inputBytes                      int64
+	// requestedModel is the client's model field, for logs only; metrics use model.
+	requestedModel string
+	code           int
+	bytes          int64
+	inputBytes     int64
 }
 
 type observedRequestBody struct {
@@ -127,11 +129,13 @@ func (o *requestObservation) finish(request *http.Request) {
 		o.code = http.StatusOK
 	}
 	o.metrics.requests.WithLabelValues(o.endpoint, o.model, o.route, strconv.Itoa(o.code), o.outcome).Inc()
-	o.metrics.duration.WithLabelValues(o.endpoint, o.model, o.route).Observe(time.Since(o.started).Seconds())
+	duration := time.Since(o.started)
+	o.metrics.duration.WithLabelValues(o.endpoint, o.model, o.route).Observe(duration.Seconds())
 	o.metrics.responseBytes.WithLabelValues(o.endpoint, o.model, o.route).Add(float64(o.bytes))
 	o.metrics.requestBytes.WithLabelValues(o.endpoint, o.model, o.route).Add(float64(o.inputBytes))
 	o.metrics.requestSize.WithLabelValues(o.endpoint, o.model, o.route).Observe(float64(o.inputBytes))
 	o.metrics.responseSize.WithLabelValues(o.endpoint, o.model, o.route).Observe(float64(o.bytes))
+	logRequest(request, o, duration)
 	if panicValue != nil {
 		panic(panicValue)
 	}

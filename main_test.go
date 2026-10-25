@@ -82,8 +82,36 @@ func TestProxyLogsForwardedClientAndModel(t *testing.T) {
 		`x_forwarded_for="192.0.2.44"`,
 		`direct_ip="127.0.0.1"`,
 		`model="org/model-a"`,
-		`result="routed"`,
-		`upstream="node-a"`,
+		`method="POST"`,
+		`endpoint="node-a"`,
+		`status=200`,
+		`outcome="completed"`,
+		`request_bytes=23`,
+		`response_bytes=23`,
+		`duration_ms=`,
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("log %q does not contain %q", output.String(), expected)
+		}
+	}
+	if lines := strings.Count(output.String(), "request client_ip="); lines != 1 {
+		t.Fatalf("got %d request log lines, want 1: %q", lines, output.String())
+	}
+}
+
+func TestProxyLogsRejectedRequest(t *testing.T) {
+	server := modelServer(t, "org/model-a")
+	defer server.Close()
+	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	var output bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"missing"}`)))
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`)))
+	for _, expected := range []string{
+		`model="missing" endpoint="" status=404 outcome="unknown_model"`,
+		`model="" endpoint="" status=400 outcome="invalid_request"`,
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("log %q does not contain %q", output.String(), expected)
