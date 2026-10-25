@@ -267,6 +267,18 @@ func (r *router) models(writer http.ResponseWriter) {
 	_ = json.NewEncoder(writer).Encode(modelDocument{Object: "list", Data: documents})
 }
 
+func (r *router) model(writer http.ResponseWriter, id string) {
+	r.mu.RLock()
+	document, ok := r.snapshot.documents[id]
+	r.mu.RUnlock()
+	if !ok {
+		writeError(writer, http.StatusNotFound, fmt.Sprintf("model %q does not exist", id), "invalid_request_error", "model_not_found")
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	_, _ = writer.Write(append(append(json.RawMessage(nil), document...), '\n'))
+}
+
 func (r *router) health(writer http.ResponseWriter) {
 	r.mu.RLock()
 	payload := map[string]any{
@@ -375,6 +387,13 @@ func (r *router) proxy(writer http.ResponseWriter, request *http.Request) {
 	upstream.proxy.ServeHTTP(writer, request)
 }
 
+var proxyRoutes = map[string]bool{
+	"/v1/chat/completions": true,
+	"/v1/completions":      true,
+	"/v1/responses":        true,
+	"/v1/embeddings":       true,
+}
+
 func (r *router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	switch {
 	case request.URL.Path == "/metrics":
@@ -388,7 +407,9 @@ func (r *router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		r.health(writer)
 	case request.Method == http.MethodGet && request.URL.Path == "/v1/models":
 		r.models(writer)
-	case request.Method == http.MethodPost && (request.URL.Path == "/v1/chat/completions" || request.URL.Path == "/v1/completions" || request.URL.Path == "/v1/responses"):
+	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/models/") && len(request.URL.Path) > len("/v1/models/"):
+		r.model(writer, strings.TrimPrefix(request.URL.Path, "/v1/models/"))
+	case request.Method == http.MethodPost && proxyRoutes[request.URL.Path]:
 		r.proxy(writer, request)
 	default:
 		writeError(writer, http.StatusNotFound, "route not found", "invalid_request_error", "not_found")
