@@ -5,7 +5,7 @@ The router reads each server's model list and sends requests to the matching ser
 
 - Works with vLLM, TensorFold and LM Studio.
 - Keeps model names and request bodies unchanged.
-- Supports streaming, chat completions, completions and responses.
+- Supports streaming, chat completions, completions, responses and embeddings.
 - Rejects duplicate model IDs instead of choosing a server.
 - Returns errors in the OpenAI error format.
 
@@ -29,6 +29,7 @@ LLM_ROUTER_CONFIG=./router.json ./llm-router
 
 Set your client's base URL to `http://127.0.0.1:1234/v1`.
 Use a model ID from `GET /v1/models`.
+`GET /v1/models/{id}` returns one model.
 
 ## Docker demo
 
@@ -45,7 +46,7 @@ For HTTPS, use the [Traefik example with Let's Encrypt and Hetzner DNS](examples
 
 ## Limits and access
 
-- No load balancing, failover, embeddings or audio routes.
+- No load balancing, failover or audio routes.
 - No built-in authentication or TLS. Keep the router on loopback, or put an
   authenticated TLS proxy in front of all routes.
 - Logs include client IPs and model IDs. Health errors can include server addresses.

@@ -442,3 +442,50 @@ func TestChunkedRequestForwardedWithContentLength(t *testing.T) {
 		t.Fatalf("content length=%d transfer encoding=%v", got.length, got.encoding)
 	}
 }
+
+func TestEmbeddingsRouteByModel(t *testing.T) {
+	var path atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(writer, `{"data":[{"id":"embed-model"}]}`)
+			return
+		}
+		path.Store(request.URL.Path)
+		_, _ = io.Copy(writer, request.Body)
+	}))
+	defer upstream.Close()
+	router := testRouter(t, EndpointConfig{Name: "node-a", URL: upstream.URL})
+	body := `{"model":"embed-model","input":"hello"}`
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body)))
+	if response.Code != http.StatusOK || response.Body.String() != body || path.Load() != "/v1/embeddings" {
+		t.Fatalf("status=%d body=%s path=%v", response.Code, response.Body.String(), path.Load())
+	}
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"other"}`)))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status=%d", response.Code)
+	}
+}
+
+func TestGetSingleModel(t *testing.T) {
+	server := modelServer(t, "org/model-a")
+	defer server.Close()
+	router := testRouter(t, EndpointConfig{Name: "node-a", URL: server.URL})
+	for _, path := range []string{"/v1/models/org/model-a", "/v1/models/org%2Fmodel-a"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		var document map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil || response.Code != http.StatusOK {
+			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		if document["id"] != "org/model-a" || document["object"] != "model" {
+			t.Fatalf("document=%v", document)
+		}
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/models/missing", nil))
+	if response.Code != http.StatusNotFound || decodeAPIError(t, response).Code != "model_not_found" {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}

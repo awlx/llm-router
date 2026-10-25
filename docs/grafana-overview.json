@@ -158,7 +158,7 @@
         "name": "route",
         "label": "Router API route",
         "type": "custom",
-        "query": "/v1/chat/completions,/v1/completions,/v1/responses",
+        "query": "/v1/chat/completions,/v1/completions,/v1/responses,/v1/embeddings",
         "multi": true,
         "includeAll": true,
         "allValue": ".*",
