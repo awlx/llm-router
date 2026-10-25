@@ -15,12 +15,12 @@ Traefik uses DNS-01 to get a certificate. It does not need the Docker socket.
    cd examples/traefik
    umask 077
    cp .env.example .env
-   cp router.example.json router.json
+   cp router.example.json config.json
    mkdir -p secrets
    ```
 
 4. Set your hostname and email in `.env`. Set your model server's address in
-   `router.json`. The router container must be able to reach that address.
+   `config.json`. The router container must be able to reach that address.
 5. Save the Hetzner token in `secrets/hetzner-api-token`. Do not put it in Git.
 6. Create a login. This command prompts for a password:
 

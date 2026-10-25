@@ -52,13 +52,13 @@ Images for `linux/amd64` and `linux/arm64` are on
 `ghcr.io/awlx/llm-router`. The image runs as a non-root user.
 
 In the container, the router must listen on all interfaces. Copy
-`config.example.json` to `router.json`, set `"listen": "0.0.0.0:1234"`, and
+`config.example.json` to `config.json`, set `"listen": "0.0.0.0:1234"`, and
 set your server addresses. Then run:
 
 ```sh
 docker run -d --name llm-router --restart unless-stopped \
   -p 127.0.0.1:1234:1234 \
-  -v "$PWD/router.json:/etc/llm-router/config.json:ro" \
+  -v "$PWD/config.json:/etc/llm-router/config.json:ro" \
   ghcr.io/awlx/llm-router:latest
 ```
 
@@ -99,14 +99,14 @@ go build -trimpath \
 ## Configure
 
 ```sh
-cp config.example.json router.json
+cp config.example.json config.json
 ```
 
-Edit `router.json`. Replace the example addresses with your server addresses,
+Edit `config.json`. Replace the example addresses with your server addresses,
 such as `http://127.0.0.1:8000`. The router removes a trailing `/v1`.
 
 ```sh
-./llm-router -config ./router.json
+./llm-router -config ./config.json
 ```
 
 You can also set the config path in `LLM_ROUTER_CONFIG`. The `-config` flag
