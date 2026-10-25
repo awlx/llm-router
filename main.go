@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -12,9 +14,11 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -33,8 +37,10 @@ type Config struct {
 	DiscoveryTimeoutSeconds  int    `json:"discovery_timeout_seconds"`
 	MaxRequestBytes          int64  `json:"max_request_bytes"`
 	// ResponseHeaderTimeoutSeconds limits the wait for upstream response headers; streams are not limited.
-	ResponseHeaderTimeoutSeconds int              `json:"response_header_timeout_seconds"`
-	Endpoints                    []EndpointConfig `json:"endpoints"`
+	ResponseHeaderTimeoutSeconds int `json:"response_header_timeout_seconds"`
+	// ShutdownTimeoutSeconds limits the wait for open requests and streams on SIGTERM or SIGINT.
+	ShutdownTimeoutSeconds int              `json:"shutdown_timeout_seconds"`
+	Endpoints              []EndpointConfig `json:"endpoints"`
 	// Top-level fields merged into a model's /v1/models entry, e.g. architecture.input_modalities.
 	ModelMetadata map[string]map[string]json.RawMessage `json:"model_metadata"`
 }
@@ -81,6 +87,7 @@ func defaultConfig() Config {
 		DiscoveryTimeoutSeconds:      4,
 		MaxRequestBytes:              32 << 20,
 		ResponseHeaderTimeoutSeconds: 600,
+		ShutdownTimeoutSeconds:       30,
 	}
 }
 
@@ -98,11 +105,13 @@ func loadConfig(path string) (Config, error) {
 	if config.Listen == "" || len(config.Endpoints) == 0 {
 		return Config{}, errors.New("listen and at least one endpoint are required")
 	}
-	if config.DiscoveryIntervalSeconds < 1 || config.DiscoveryTimeoutSeconds < 1 || config.MaxRequestBytes < 1024 || config.ResponseHeaderTimeoutSeconds < 1 {
-		return Config{}, errors.New("invalid discovery interval, timeout, response header timeout, or request size")
+	if config.DiscoveryIntervalSeconds < 1 || config.DiscoveryTimeoutSeconds < 1 || config.MaxRequestBytes < 1024 || config.ResponseHeaderTimeoutSeconds < 1 || config.ShutdownTimeoutSeconds < 1 {
+		return Config{}, errors.New("invalid discovery interval, timeout, response header timeout, shutdown timeout, or request size")
 	}
 	names := map[string]bool{}
 	for index, item := range config.Endpoints {
+		item.URL = normalizeEndpointURL(item.URL)
+		config.Endpoints[index].URL = item.URL
 		parsed, parseErr := url.ParseRequestURI(item.URL)
 		if item.Name == "" || names[item.Name] || parseErr != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			return Config{}, fmt.Errorf("invalid or duplicate endpoint at index %d", index)
@@ -125,6 +134,15 @@ func loadConfig(path string) (Config, error) {
 		}
 	}
 	return config, nil
+}
+
+// normalizeEndpointURL removes trailing slashes and a trailing /v1, because the router adds /v1 paths itself.
+func normalizeEndpointURL(raw string) string {
+	trimmed := strings.TrimRight(raw, "/")
+	if strings.HasSuffix(trimmed, "/v1") {
+		trimmed = strings.TrimRight(strings.TrimSuffix(trimmed, "/v1"), "/")
+	}
+	return trimmed
 }
 
 func (r *router) withMetadata(id string, raw json.RawMessage) json.RawMessage {
@@ -464,10 +482,66 @@ func (r *router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 }
 
+func isLoopbackListen(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func inContainer() bool {
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(marker); err == nil {
+			return true
+		}
+	}
+	cgroup, err := os.ReadFile("/proc/1/cgroup")
+	if err != nil {
+		return false
+	}
+	for _, marker := range []string{"docker", "kubepods", "containerd", "libpod", "lxc"} {
+		if bytes.Contains(cgroup, []byte(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+// serve runs the server until ctx ends, then stops new connections and waits up to timeout for open requests.
+func serve(ctx context.Context, server *http.Server, listener net.Listener, timeout time.Duration) error {
+	errorsChannel := make(chan error, 1)
+	go func() { errorsChannel <- server.Serve(listener) }()
+	select {
+	case err := <-errorsChannel:
+		return err
+	case <-ctx.Done():
+	}
+	log.Printf("shutdown: waiting up to %s for open requests", timeout)
+	shutdownContext, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := server.Shutdown(shutdownContext); err != nil {
+		log.Printf("shutdown: %v; closing open connections", err)
+		_ = server.Close()
+		return err
+	}
+	log.Print("shutdown: complete")
+	return nil
+}
+
 func main() {
-	path := os.Getenv("LLM_ROUTER_CONFIG")
+	configPath := flag.String("config", "", "path to the JSON config file (default: $LLM_ROUTER_CONFIG)")
+	flag.Parse()
+	path := *configPath
 	if path == "" {
-		log.Fatal("LLM_ROUTER_CONFIG is required")
+		path = os.Getenv("LLM_ROUTER_CONFIG")
+	}
+	if path == "" {
+		log.Fatal("set -config or LLM_ROUTER_CONFIG")
 	}
 	config, err := loadConfig(path)
 	if err != nil {
@@ -477,15 +551,25 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if isLoopbackListen(config.Listen) && inContainer() {
+		log.Printf("warning: listen address %s is loopback inside a container; clients outside the container cannot connect. Use 0.0.0.0:<port> to publish the port", config.Listen)
+	}
 	router.discover()
 	go router.runDiscovery()
 	server := &http.Server{
-		Addr:              config.Listen,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	listener, err := net.Listen("tcp", config.Listen)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	log.Printf("llm-router listening on %s with %d endpoints", config.Listen, len(config.Endpoints))
-	log.Fatal(server.ListenAndServe())
+	if err := serve(ctx, server, listener, time.Duration(config.ShutdownTimeoutSeconds)*time.Second); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
 }
